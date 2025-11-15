@@ -6,32 +6,36 @@ use serde_json;
 use std::io::{self, Write};
 
 /// System prompt for the LLM to generate documentation
-const SYSTEM_PROMPT: &str = r#"You are an expert code documentation assistant. Given source code and its AST, generate structured documentation for all symbols (functions, classes, methods, etc.).
+const SYSTEM_PROMPT: &str = r#"
+You generate documentation strictly as JSON.
 
-Output ONLY valid JSON in this exact format:
-{
-  "symbols": [
-    {
-      "id": "file_path::symbol_name",
-      "kind": "function|method|class|struct|enum|trait|interface|constant|variable|module|type",
-      "signature": "full signature if applicable",
-      "summary": "one-line summary",
-      "description": "detailed explanation",
-      "examples": ["code example 1", "code example 2"],
-      "complexity": "O(n) or other complexity analysis",
-      "dependencies": ["other::symbol::ids"],
-      "notes": "additional context or caveats"
-    }
-  ]
-}
+OUTPUT RULES:
+- Output ONLY valid JSON. No prose, no markdown, no explanations.
+- JSON must start with '{' and end with '}'.
+- Use this exact structure:
+  {
+    "symbols": [
+      {
+        "id": "path::name",
+        "kind": "function|method|class|struct|enum|trait|interface|constant|variable|module|type",
+        "signature": "string",
+        "summary": "one short sentence",
+        "description": "one or two concise sentences",
+        "examples": [],
+        "complexity": "",
+        "dependencies": [],
+        "notes": ""
+      }
+    ]
+  }
+- Use double quotes everywhere.
+- No trailing commas.
+- If something does not exist, use empty array [] or empty string "".
+- Never output multiple top-level objects. One single JSON object only.
 
-Rules:
-- Generate stable IDs in format: path::symbol_name
-- Be concise but thorough
-- Include practical examples
-- Analyze time/space complexity when relevant
-- Note dependencies on other symbols
-- Output ONLY the JSON, no markdown, no explanations"#;
+Your task:
+Read the provided source code and return documentation in this JSON format.
+Generate only valid JSON and nothing else."#;
 
 /// Response format we expect from the LLM
 #[derive(Debug, serde::Deserialize)]
@@ -60,18 +64,16 @@ impl DocGenerator {
         // Build prompt with file context
         let prompt = self.build_prompt(file_ast, source_code);
 
-        // Build JSON schema for guided decoding
-        let json_schema = self.build_json_schema();
-
-        // Call vLLM with guided JSON decoding
+        // Call vLLM with optimized parameters for JSON output
+        // Stop tokens help ensure valid JSON completion
         let response = self
             .client
             .generate_with_params(
                 prompt,
-                Some(json_schema),
-                Some(0.3),     // Low temperature for more deterministic output
-                Some(2048),    // Max tokens - adjust based on your needs
-                Some(0.95),    // Top-p sampling
+                Some(0.3),  // Low temperature for more deterministic output
+                Some(4096), // Increased max tokens for complex files
+                Some(0.95), // Top-p sampling
+                Some(vec!["\n\n---".to_string()]), // Stop token to prevent generating beyond JSON
             )
             .await?;
 
@@ -143,52 +145,86 @@ impl DocGenerator {
 
     /// Build the prompt for the LLM
     fn build_prompt(&self, file_ast: &FileAst, source_code: &str) -> String {
-        // Serialize AST to JSON for context
-        let ast_json =
-            serde_json::to_string_pretty(&file_ast.ast).unwrap_or_else(|_| "{}".to_string());
+        // Truncate source code if too long (keep first 8000 chars to stay within context)
+        let truncated_source = if source_code.len() > 8000 {
+            format!("{}...\n[truncated]", &source_code[..8000])
+        } else {
+            source_code.to_string()
+        };
 
+        // Build a compact representation focusing on the source code
+        // Skip AST for now to reduce tokens - the model can infer from source
         format!(
-            "{}\n\n---\n\nFile: {}\nLanguage: {}\n\nSource Code:\n```\n{}\n```\n\nAST:\n```json\n{}\n```\n\nGenerate documentation:",
-            SYSTEM_PROMPT,
-            file_ast.file_path,
-            file_ast.language,
-            source_code,
-            ast_json
+            "{}\n\nFile: {}\nLanguage: {}\n\nCode:\n{}\n\nJSON:",
+            SYSTEM_PROMPT, file_ast.file_path, file_ast.language, truncated_source
         )
     }
 
     /// Parse the LLM's JSON response with repair attempts
     fn parse_llm_response(&self, text: &str) -> Result<Vec<Symbol>> {
-        // Try to extract JSON from markdown code blocks if present
-        let json_text = if text.contains("```json") {
-            text.split("```json")
-                .nth(1)
-                .and_then(|s| s.split("```").next())
-                .unwrap_or(text)
-        } else if text.contains("```") {
-            text.split("```")
-                .nth(1)
-                .and_then(|s| s.split("```").next())
-                .unwrap_or(text)
-        } else {
-            text
-        }
-        .trim();
+        // Step 1: Extract JSON from various formats
+        let json_text = self.extract_json_content(text);
 
-        // First attempt: Parse as-is
+        // Step 2: Try parsing as-is
         if let Ok(response) = serde_json::from_str::<LlmResponse>(json_text) {
             return Ok(response.symbols);
         }
 
-        // Second attempt: Try to repair common JSON issues
+        // Step 3: Try to repair common JSON issues
         let repaired = self.repair_json(json_text);
         if let Ok(response) = serde_json::from_str::<LlmResponse>(&repaired) {
             return Ok(response.symbols);
         }
 
-        // Final attempt: Parse the original and return error if it fails
+        // Step 4: Try aggressive extraction - find first { to last }
+        if let Some(extracted) = self.extract_json_object(text) {
+            if let Ok(response) = serde_json::from_str::<LlmResponse>(&extracted) {
+                return Ok(response.symbols);
+            }
+            // Try repairing the extracted JSON
+            let repaired_extracted = self.repair_json(&extracted);
+            if let Ok(response) = serde_json::from_str::<LlmResponse>(&repaired_extracted) {
+                return Ok(response.symbols);
+            }
+        }
+
+        // Step 5: Final attempt - parse original and return error
         let response: LlmResponse = serde_json::from_str(json_text)?;
         Ok(response.symbols)
+    }
+
+    /// Extract JSON content from various wrapper formats
+    fn extract_json_content<'a>(&self, text: &'a str) -> &'a str {
+        let trimmed = text.trim();
+
+        // Check for markdown code blocks
+        if trimmed.contains("```json") {
+            if let Some(json_part) = trimmed.split("```json").nth(1) {
+                if let Some(content) = json_part.split("```").next() {
+                    return content.trim();
+                }
+            }
+        } else if trimmed.contains("```") {
+            if let Some(code_part) = trimmed.split("```").nth(1) {
+                if let Some(content) = code_part.split("```").next() {
+                    return content.trim();
+                }
+            }
+        }
+
+        trimmed
+    }
+
+    /// Aggressively extract JSON object from text
+    fn extract_json_object(&self, text: &str) -> Option<String> {
+        let first_brace = text.find('{')?;
+        let last_brace = text.rfind('}')?;
+
+        if last_brace > first_brace {
+            Some(text[first_brace..=last_brace].to_string())
+        } else {
+            None
+        }
     }
 
     /// Attempt to repair common JSON formatting issues
@@ -275,8 +311,7 @@ impl BatchProcessor {
                     let symbol_count = content.symbols.len();
                     log_info(&format!(
                         "✓ Generated {} symbols for {}",
-                        symbol_count,
-                        file_ast.file_path
+                        symbol_count, file_ast.file_path
                     ));
                     results.push(content);
                 }

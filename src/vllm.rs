@@ -19,13 +19,13 @@ pub struct VllmInput {
 #[derive(Debug, Serialize)]
 pub struct SamplingParams {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub guided_json: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop: Option<Vec<String>>,
 }
 
 /// Response from the RunPod vLLM endpoint
@@ -98,21 +98,22 @@ impl VllmClient {
     pub async fn generate_with_params(
         &mut self,
         prompt: String,
-        guided_json: Option<serde_json::Value>,
         temperature: Option<f32>,
         max_tokens: Option<u32>,
         top_p: Option<f32>,
+        stop: Option<Vec<String>>,
     ) -> Result<VllmResponse> {
-        let sampling_params = if guided_json.is_some() || temperature.is_some() || max_tokens.is_some() || top_p.is_some() {
-            Some(SamplingParams {
-                guided_json,
-                temperature,
-                max_tokens,
-                top_p,
-            })
-        } else {
-            None
-        };
+        let sampling_params =
+            if temperature.is_some() || max_tokens.is_some() || top_p.is_some() || stop.is_some() {
+                Some(SamplingParams {
+                    temperature,
+                    max_tokens,
+                    top_p,
+                    stop,
+                })
+            } else {
+                None
+            };
 
         let request = VllmRequest {
             input: VllmInput {
@@ -141,15 +142,20 @@ impl VllmClient {
         }
 
         // Get the response text first for debugging
-        let response_text = response.text().await
+        let response_text = response
+            .text()
+            .await
             .context("Failed to read response text from RunPod API")?;
 
         // Log the raw response for debugging
         eprintln!("[DEBUG] Raw API response: {}", response_text);
 
         // Try to parse the response
-        let vllm_response = serde_json::from_str::<VllmResponse>(&response_text)
-            .context(format!("Failed to parse response from RunPod API. Response was: {}", response_text))?;
+        let vllm_response =
+            serde_json::from_str::<VllmResponse>(&response_text).context(format!(
+                "Failed to parse response from RunPod API. Response was: {}",
+                response_text
+            ))?;
 
         // Track token usage
         for output in &vllm_response.output {
