@@ -236,6 +236,13 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
     Yields:
         Status updates for streaming
     """
+    # IMPORTANT: First yield to test handler is working
+    yield {
+        "status": "initializing",
+        "message": "Handler started",
+        "progress": 0
+    }
+
     job_input = job.get("input", {})
 
     # Log job start
@@ -245,7 +252,10 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
 
     try:
         # Process and yield updates
-        yield from process_repository(job_input)
+        for update in process_repository(job_input):
+            print(f"[RunPod] Yielding: {update}", file=sys.stderr)
+            sys.stderr.flush()
+            yield update
     except Exception as e:
         print(f"[RunPod] Handler error: {e}", file=sys.stderr)
         sys.stderr.flush()
