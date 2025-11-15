@@ -60,8 +60,20 @@ impl DocGenerator {
         // Build prompt with file context
         let prompt = self.build_prompt(file_ast, source_code);
 
-        // Call vLLM
-        let response = self.client.generate(prompt).await?;
+        // Build JSON schema for guided decoding
+        let json_schema = self.build_json_schema();
+
+        // Call vLLM with guided JSON decoding
+        let response = self
+            .client
+            .generate_with_params(
+                prompt,
+                Some(json_schema),
+                Some(0.3),     // Low temperature for more deterministic output
+                Some(2048),    // Max tokens - adjust based on your needs
+                Some(0.95),    // Top-p sampling
+            )
+            .await?;
 
         // Log token usage for this file
         let (total_in, total_out) = self.client.get_token_stats();
@@ -95,6 +107,40 @@ impl DocGenerator {
         })
     }
 
+    /// Build JSON schema for guided decoding
+    fn build_json_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "symbols": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "kind": {"type": "string"},
+                            "signature": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "description": {"type": "string"},
+                            "examples": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
+                            "complexity": {"type": "string"},
+                            "dependencies": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
+                            "notes": {"type": "string"}
+                        },
+                        "required": ["id", "kind", "summary", "description"]
+                    }
+                }
+            },
+            "required": ["symbols"]
+        })
+    }
+
     /// Build the prompt for the LLM
     fn build_prompt(&self, file_ast: &FileAst, source_code: &str) -> String {
         // Serialize AST to JSON for context
@@ -111,7 +157,7 @@ impl DocGenerator {
         )
     }
 
-    /// Parse the LLM's JSON response
+    /// Parse the LLM's JSON response with repair attempts
     fn parse_llm_response(&self, text: &str) -> Result<Vec<Symbol>> {
         // Try to extract JSON from markdown code blocks if present
         let json_text = if text.contains("```json") {
@@ -129,9 +175,53 @@ impl DocGenerator {
         }
         .trim();
 
-        // Parse JSON
+        // First attempt: Parse as-is
+        if let Ok(response) = serde_json::from_str::<LlmResponse>(json_text) {
+            return Ok(response.symbols);
+        }
+
+        // Second attempt: Try to repair common JSON issues
+        let repaired = self.repair_json(json_text);
+        if let Ok(response) = serde_json::from_str::<LlmResponse>(&repaired) {
+            return Ok(response.symbols);
+        }
+
+        // Final attempt: Parse the original and return error if it fails
         let response: LlmResponse = serde_json::from_str(json_text)?;
         Ok(response.symbols)
+    }
+
+    /// Attempt to repair common JSON formatting issues
+    fn repair_json(&self, text: &str) -> String {
+        let mut repaired = text.to_string();
+
+        // Remove any trailing commas before closing brackets
+        repaired = repaired.replace(",]", "]").replace(",}", "}");
+
+        // If JSON is truncated mid-string, try to close it
+        // Count open/close braces and brackets
+        let open_braces = repaired.matches('{').count();
+        let close_braces = repaired.matches('}').count();
+        let open_brackets = repaired.matches('[').count();
+        let close_brackets = repaired.matches(']').count();
+
+        // If we're in an incomplete string (odd number of quotes), close it
+        let quote_count = repaired.matches('"').count();
+        if quote_count % 2 != 0 {
+            repaired.push('"');
+        }
+
+        // Close any unclosed arrays
+        for _ in 0..(open_brackets - close_brackets) {
+            repaired.push(']');
+        }
+
+        // Close any unclosed objects
+        for _ in 0..(open_braces - close_braces) {
+            repaired.push('}');
+        }
+
+        repaired
     }
 
     /// Get token statistics

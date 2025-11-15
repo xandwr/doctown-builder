@@ -11,6 +11,14 @@ pub struct VllmRequest {
 #[derive(Debug, Serialize)]
 pub struct VllmInput {
     pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guided_json: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
 }
 
 /// Response from the RunPod vLLM endpoint
@@ -75,8 +83,27 @@ impl VllmClient {
 
     /// Send a prompt to the vLLM endpoint and get the response
     pub async fn generate(&mut self, prompt: String) -> Result<VllmResponse> {
+        self.generate_with_params(prompt, None, None, None, None)
+            .await
+    }
+
+    /// Send a prompt with custom generation parameters
+    pub async fn generate_with_params(
+        &mut self,
+        prompt: String,
+        guided_json: Option<serde_json::Value>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+        top_p: Option<f32>,
+    ) -> Result<VllmResponse> {
         let request = VllmRequest {
-            input: VllmInput { prompt },
+            input: VllmInput {
+                prompt,
+                guided_json,
+                temperature,
+                max_tokens,
+                top_p,
+            },
         };
 
         let response = self
