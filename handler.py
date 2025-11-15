@@ -9,6 +9,7 @@ import sys
 import subprocess
 import tempfile
 import requests
+import runpod
 from typing import Generator, Dict, Any
 
 
@@ -374,3 +375,4 @@ if __name__ == "__main__":
     # Start the RunPod serverless worker
     print("[RunPod] Starting doctown-builder serverless worker...", file=sys.stderr)
     sys.stderr.flush()
+    runpod.serverless.start({"handler": handler})
