@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::{collections::HashMap, fs::File, io::Write, path::Path};
+use std::{collections::HashMap, env, fs::File, io::{self, Write}, path::Path};
 use tree_sitter::{Language, Node, Parser};
 use walkdir::WalkDir;
 
@@ -53,23 +53,47 @@ struct FileAst {
 }
 
 fn main() -> Result<()> {
-    let zip_path = "test-sources/xandwr.ca-main.zip";
+    // Get zip path from command-line arguments
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        log_error("Usage: doctown-builder <path-to-zip-file>");
+        anyhow::bail!("Missing required argument: path to zip file");
+    }
+
+    let zip_path = &args[1];
+    log_info(&format!("Starting doctown-builder with: {}", zip_path));
 
     // Create a temporary directory that will be automatically cleaned up
     let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
     let temp_path = temp_dir.path();
 
     // Extract zip to temporary directory
+    log_info("Extracting ZIP file...");
     ingest_zip(zip_path, temp_path)?;
+    log_info("ZIP extraction complete");
 
     // Create parser pool for reuse
     let mut parser_pool = ParserPool::new()?;
 
     // Parse all supported files in the extracted directory with streaming output
+    log_info("Starting AST parsing...");
     parse_directory_streaming(temp_path, &mut parser_pool, &mut std::io::stdout())?;
+    log_info("AST parsing complete");
 
     // temp_dir is automatically cleaned up when it goes out of scope
     Ok(())
+}
+
+/// Log an informational message to stderr (won't interfere with stdout JSONL)
+fn log_info(message: &str) {
+    eprintln!("[LOG] {}", message);
+    let _ = io::stderr().flush();
+}
+
+/// Log an error message to stderr
+fn log_error(message: &str) {
+    eprintln!("[ERROR] {}", message);
+    let _ = io::stderr().flush();
 }
 
 /// Parser pool to reuse parsers across files
@@ -124,12 +148,22 @@ fn parse_directory_streaming<W: Write>(
     parser_pool: &mut ParserPool,
     writer: &mut W,
 ) -> Result<()> {
-    for entry in WalkDir::new(dir)
+    let mut file_count = 0;
+    let mut processed_count = 0;
+
+    // Collect all files first to get total count
+    let all_files: Vec<_> = WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-    {
+        .collect();
+
+    let total_files = all_files.len();
+    log_info(&format!("Found {} files to scan", total_files));
+
+    for entry in all_files {
         let path = entry.path();
+        file_count += 1;
 
         // Skip files larger than 512KB
         let size = match std::fs::metadata(path) {
@@ -137,6 +171,11 @@ fn parse_directory_streaming<W: Write>(
             Err(_) => continue,
         };
         if size > MAX_FILE_SIZE {
+            log_info(&format!(
+                "Skipping large file: {} ({} bytes)",
+                path.display(),
+                size
+            ));
             continue;
         }
 
@@ -150,26 +189,43 @@ fn parse_directory_streaming<W: Write>(
             _ => continue, // Skip unsupported file types
         };
 
+        // Get relative path for display
+        let relative_path = path
+            .strip_prefix(dir)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+
         // Parse the file using parser pool
-        if let Ok(ast) = parse_file_with_pool(path, language, parser_pool) {
-            // Get relative path from temp directory for cleaner output
-            let relative_path = path
-                .strip_prefix(dir)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
+        match parse_file_with_pool(path, language, parser_pool) {
+            Ok(ast) => {
+                processed_count += 1;
+                log_info(&format!(
+                    "[{}/{}] Processing: {} ({})",
+                    processed_count, total_files, relative_path, language
+                ));
 
-            let file_ast = FileAst {
-                file_path: relative_path,
-                language: language.to_string(),
-                ast,
-            };
+                let file_ast = FileAst {
+                    file_path: relative_path,
+                    language: language.to_string(),
+                    ast,
+                };
 
-            // Stream output immediately
-            let json = serde_json::to_string(&file_ast)?;
-            writeln!(writer, "{}", json)?;
+                // Stream output immediately
+                let json = serde_json::to_string(&file_ast)?;
+                writeln!(writer, "{}", json)?;
+                writer.flush()?; // Ensure output is flushed for real-time streaming
+            }
+            Err(e) => {
+                log_error(&format!("Failed to parse {}: {}", relative_path, e));
+            }
         }
     }
+
+    log_info(&format!(
+        "Completed: processed {} files out of {} total files",
+        processed_count, total_files
+    ));
 
     Ok(())
 }
