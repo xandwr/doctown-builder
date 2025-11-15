@@ -103,7 +103,7 @@ pub struct ContentEntry {
     pub symbols: Vec<Symbol>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {
     pub id: String,
     pub kind: SymbolKind,
@@ -121,7 +121,7 @@ pub struct Symbol {
     pub notes: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SymbolKind {
     Function,

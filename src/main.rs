@@ -116,7 +116,8 @@ async fn main() -> Result<()> {
 
     // Step 4: Generate documentation using LLM
     log_info("Step 4: Generating documentation with AI...");
-    let mut batch_processor = BatchProcessor::new(vllm_client, 1);
+    // Use 130k token batches for efficient processing
+    let mut batch_processor = BatchProcessor::new(vllm_client, 130_000);
     let content_entries = batch_processor.process_files(parsed_files).await?;
     let (tokens_in, tokens_out) = batch_processor.get_token_stats();
     log_info(&format!(
