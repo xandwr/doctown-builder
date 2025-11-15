@@ -270,4 +270,5 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
 if __name__ == "__main__":
     # Start the RunPod serverless worker
     print("[RunPod] Starting doctown-builder serverless worker...", file=sys.stderr)
-    runpod.serverless.start({"handler": handler})
+    sys.stderr.flush()
+    runpod.serverless.start(handler)
