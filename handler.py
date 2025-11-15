@@ -225,7 +225,7 @@ def process_repository(job_input: Dict[str, Any]) -> Generator[Dict[str, Any], N
             pass
 
 
-def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
+def handler(job: Dict[str, Any]):
     """
     RunPod serverless handler function.
     This function is called by RunPod for each job.
@@ -233,42 +233,47 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
     Args:
         job: Job dictionary with 'id' and 'input' keys
 
-    Yields:
-        Status updates for streaming
+    Returns:
+        List of all status updates and outputs
     """
-    # IMPORTANT: First yield to test handler is working
-    yield {
-        "status": "initializing",
-        "message": "Handler started",
-        "progress": 0
-    }
-
     job_input = job.get("input", {})
+    outputs = []
 
     # Log job start
     print(f"[RunPod] Starting job {job.get('id')}", file=sys.stderr)
     print(f"[RunPod] Input: {job_input}", file=sys.stderr)
     sys.stderr.flush()
 
+    # Add initial status
+    outputs.append({
+        "status": "initializing",
+        "message": "Handler started",
+        "progress": 0
+    })
+
     try:
-        # Process and yield updates
+        # Process and collect all updates
         for update in process_repository(job_input):
-            print(f"[RunPod] Yielding: {update}", file=sys.stderr)
+            print(f"[RunPod] Collecting: {update}", file=sys.stderr)
             sys.stderr.flush()
-            yield update
+            outputs.append(update)
     except Exception as e:
         print(f"[RunPod] Handler error: {e}", file=sys.stderr)
         sys.stderr.flush()
         import traceback
         traceback.print_exc(file=sys.stderr)
-        yield {
+        outputs.append({
             "error": f"Handler exception: {str(e)}",
             "status": "failed"
-        }
+        })
+
+    print(f"[RunPod] Returning {len(outputs)} outputs", file=sys.stderr)
+    sys.stderr.flush()
+    return outputs
 
 
 if __name__ == "__main__":
     # Start the RunPod serverless worker
     print("[RunPod] Starting doctown-builder serverless worker...", file=sys.stderr)
     sys.stderr.flush()
-    runpod.serverless.start(handler)
+    runpod.serverless.start({"handler": handler})
