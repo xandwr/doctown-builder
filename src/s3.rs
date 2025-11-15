@@ -18,23 +18,15 @@ impl S3Client {
             .context("BUCKET_ACCESS_KEY_ID not found in environment")?;
         let secret_access_key = env::var("BUCKET_SECRET_ACCESS_KEY")
             .context("BUCKET_SECRET_ACCESS_KEY not found in environment")?;
-        let bucket_name = env::var("BUCKET_NAME")
-            .unwrap_or_else(|_| "doctown-central".to_string());
+        let bucket_name = env::var("BUCKET_NAME").unwrap_or_else(|_| "doctown-central".to_string());
         let endpoint_url = env::var("BUCKET_ENDPOINT_URL")
             .context("BUCKET_ENDPOINT_URL not found in environment (e.g., https://your-account-id.r2.cloudflarestorage.com)")?;
 
         // Create credentials
-        let credentials = Credentials::new(
-            access_key_id,
-            secret_access_key,
-            None,
-            None,
-            "env",
-        );
+        let credentials = Credentials::new(access_key_id, secret_access_key, None, None, "env");
 
         // Build S3 config for R2
-        let region = RegionProviderChain::default_provider()
-            .or_else(Region::new("auto"));
+        let region = RegionProviderChain::default_provider().or_else(Region::new("auto"));
 
         let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(region)
@@ -87,7 +79,10 @@ impl S3Client {
             .await
             .context(format!("Failed to upload to S3: {}", s3_key))?;
 
-        log_info(&format!("✓ Uploaded to S3: {}/{}", self.bucket_name, s3_key));
+        log_info(&format!(
+            "✓ Uploaded to S3: {}/{}",
+            self.bucket_name, s3_key
+        ));
 
         Ok(s3_key)
     }
