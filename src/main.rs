@@ -148,7 +148,7 @@ fn parse_directory_streaming<W: Write>(
     parser_pool: &mut ParserPool,
     writer: &mut W,
 ) -> Result<()> {
-    let mut file_count = 0;
+    let mut _file_count = 0;
     let mut processed_count = 0;
 
     // Collect all files first to get total count
@@ -163,7 +163,7 @@ fn parse_directory_streaming<W: Write>(
 
     for entry in all_files {
         let path = entry.path();
-        file_count += 1;
+        _file_count += 1;
 
         // Skip files larger than 512KB
         let size = match std::fs::metadata(path) {
