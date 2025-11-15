@@ -12,6 +12,13 @@ pub struct VllmRequest {
 pub struct VllmInput {
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling_params: Option<SamplingParams>,
+}
+
+/// Sampling parameters for vLLM generation
+#[derive(Debug, Serialize)]
+pub struct SamplingParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub guided_json: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
@@ -96,13 +103,21 @@ impl VllmClient {
         max_tokens: Option<u32>,
         top_p: Option<f32>,
     ) -> Result<VllmResponse> {
-        let request = VllmRequest {
-            input: VllmInput {
-                prompt,
+        let sampling_params = if guided_json.is_some() || temperature.is_some() || max_tokens.is_some() || top_p.is_some() {
+            Some(SamplingParams {
                 guided_json,
                 temperature,
                 max_tokens,
                 top_p,
+            })
+        } else {
+            None
+        };
+
+        let request = VllmRequest {
+            input: VllmInput {
+                prompt,
+                sampling_params,
             },
         };
 
