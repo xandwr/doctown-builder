@@ -9,8 +9,34 @@ import sys
 import subprocess
 import tempfile
 import requests
-import runpod
 from typing import Generator, Dict, Any
+
+
+def get_branch_commit_hash(owner: str, repo: str, branch: str, token: str) -> str:
+    """
+    Get the latest commit hash for a branch.
+
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        branch: Branch name
+        token: GitHub OAuth token
+
+    Returns:
+        The commit SHA hash
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/branches/{branch}"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+
+    response = requests.get(url, headers=headers, timeout=30)
+    response.raise_for_status()
+
+    data = response.json()
+    return data["commit"]["sha"]
 
 
 def download_github_zip(owner: str, repo: str, branch: str, token: str, output_path: str) -> None:
@@ -87,11 +113,26 @@ def process_repository(job_input: Dict[str, Any]) -> Generator[Dict[str, Any], N
         print(f"[RunPod] Binary found at {binary_path}", file=sys.stderr)
         sys.stderr.flush()
 
-        # Step 1: Download repository ZIP
+        # Step 1: Get commit hash
+        yield {
+            "status": "fetching_metadata",
+            "message": f"Fetching branch info for {owner}/{repo}...",
+            "progress": 5
+        }
+
+        commit_hash = get_branch_commit_hash(owner, repo, branch, token)
+
+        yield {
+            "status": "metadata_fetched",
+            "message": f"Commit: {commit_hash[:7]}",
+            "progress": 10
+        }
+
+        # Step 2: Download repository ZIP
         yield {
             "status": "downloading",
             "message": f"Downloading {owner}/{repo} (branch: {branch})...",
-            "progress": 10
+            "progress": 15
         }
 
         download_github_zip(owner, repo, branch, token, zip_path)
@@ -102,26 +143,29 @@ def process_repository(job_input: Dict[str, Any]) -> Generator[Dict[str, Any], N
             "progress": 30
         }
 
-        # Step 2: Process with Rust binary
+        # Step 3: Process with Rust binary
         yield {
             "status": "processing",
-            "message": "Starting AST parsing...",
+            "message": "Starting AST parsing and doc generation...",
             "progress": 40
         }
 
-        # Execute the Rust binary
-        binary_path = "/app/doctown-builder"
+        # Construct repo URL
+        repo_url = f"https://github.com/{owner}/{repo}"
 
-        print(f"[RunPod] Executing: {binary_path} {zip_path}", file=sys.stderr)
+        # Output path for docpack (in temp directory)
+        output_docpack = os.path.join(temp_dir, f"{repo}.docpack")
+
+        print(f"[RunPod] Executing: {binary_path} {zip_path} {repo_url} {commit_hash} {output_docpack}", file=sys.stderr)
         sys.stderr.flush()
 
         # Use subprocess.run with capture for simpler handling
         try:
             result = subprocess.run(
-                [binary_path, zip_path],
+                [binary_path, zip_path, repo_url, commit_hash, output_docpack],
                 capture_output=True,
                 text=True,
-                timeout=300  # 5 minute timeout
+                timeout=600  # 10 minute timeout (includes vLLM calls)
             )
 
             print(f"[RunPod] Process completed with code {result.returncode}", file=sys.stderr)
@@ -147,10 +191,19 @@ def process_repository(job_input: Dict[str, Any]) -> Generator[Dict[str, Any], N
 
                     if line.startswith("[LOG]"):
                         log_msg = line[5:].strip()
+                        # Map progress messages to percentages
+                        progress = 50
+                        if "Generating documentation" in log_msg:
+                            progress = 60
+                        elif "Building .docpack" in log_msg:
+                            progress = 80
+                        elif "Uploaded to S3" in log_msg:
+                            progress = 95
+
                         yield {
                             "status": "processing",
                             "message": log_msg,
-                            "progress": 50
+                            "progress": progress
                         }
                     elif line.startswith("[ERROR]"):
                         error_msg = line[7:].strip()
@@ -160,26 +213,34 @@ def process_repository(job_input: Dict[str, Any]) -> Generator[Dict[str, Any], N
                             "progress": 50
                         }
 
-            # Parse stdout for JSONL data
-            jsonl_lines = []
-            if result.stdout:
-                for line in result.stdout.split('\n'):
-                    line = line.strip()
-                    if line:
-                        jsonl_lines.append(line)
-                        # Yield each JSONL line
-                        yield {
-                            "status": "processing",
-                            "data_chunk": line
-                        }
+            # Check that docpack was created
+            if not os.path.exists(output_docpack):
+                yield {
+                    "error": "Docpack file was not created",
+                    "status": "failed"
+                }
+                return
 
-            file_count = len(jsonl_lines)
-            print(f"[RunPod] Processed {file_count} files", file=sys.stderr)
+            # Parse stdout for S3 URL (last line should be the S3 key)
+            s3_key = None
+            if result.stdout:
+                lines = result.stdout.strip().split('\n')
+                if lines:
+                    s3_key = lines[-1].strip()
+
+            if not s3_key:
+                yield {
+                    "error": "S3 key not returned from builder",
+                    "status": "failed"
+                }
+                return
+
+            print(f"[RunPod] Docpack uploaded to: {s3_key}", file=sys.stderr)
             sys.stderr.flush()
 
         except subprocess.TimeoutExpired:
             yield {
-                "error": "Process timed out after 5 minutes",
+                "error": "Process timed out after 10 minutes",
                 "status": "failed"
             }
             return
@@ -192,13 +253,13 @@ def process_repository(job_input: Dict[str, Any]) -> Generator[Dict[str, Any], N
             }
             return
 
-        # Step 3: Complete
+        # Step 4: Complete
         yield {
             "status": "completed",
-            "message": f"Successfully processed {file_count} files",
+            "message": f"Docpack created successfully!",
             "progress": 100,
-            "file_count": file_count,
-            "total_lines": len(jsonl_lines)
+            "s3_key": s3_key,
+            "docpack_url": f"https://commons.doctown.dev/{s3_key}" # R2 public domain on C.F
         }
 
     except requests.exceptions.RequestException as e:
@@ -276,4 +337,3 @@ if __name__ == "__main__":
     # Start the RunPod serverless worker
     print("[RunPod] Starting doctown-builder serverless worker...", file=sys.stderr)
     sys.stderr.flush()
-    runpod.serverless.start({"handler": handler})

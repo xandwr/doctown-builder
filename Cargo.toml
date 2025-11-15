@@ -22,6 +22,9 @@ dotenv = "0.15"
 sha2 = "0.10"
 hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
+aws-sdk-s3 = "1.68"
+aws-config = "1.5"
+aws-credential-types = "1.2"
 
 [build-dependencies]
 cc="*"

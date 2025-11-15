@@ -1,5 +1,6 @@
 mod docpack;
 mod generator;
+mod s3;
 mod vllm;
 
 use anyhow::{Context, Result};
@@ -9,6 +10,7 @@ use docpack::{
     GENERATOR_NAME, GENERATOR_VERSION,
 };
 use generator::BatchProcessor;
+use s3::S3Client;
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -175,7 +177,22 @@ async fn main() -> Result<()> {
     let final_path = docpack_builder.finalize()?;
     log_info(&format!("✓ Docpack created: {}", final_path.display()));
 
+    // Step 6: Upload to S3/R2
+    log_info("Step 6: Uploading to R2...");
+    let s3_client = S3Client::from_env().await?;
+
+    // Extract owner and repo name from repo_url
+    let (owner, repo_name) = extract_owner_and_repo(repo_url)?;
+
+    let s3_key = s3_client
+        .upload_docpack(&final_path, &owner, &repo_name)
+        .await?;
+
     log_info("✅ Pipeline complete!");
+
+    // Output S3 key to stdout so handler.py can read it
+    println!("{}", s3_key);
+
     Ok(())
 }
 
@@ -186,6 +203,22 @@ fn extract_repo_name(repo_url: &str) -> String {
         .last()
         .unwrap_or("unknown")
         .to_string()
+}
+
+/// Extract owner and repo name from GitHub URL
+/// Example: "https://github.com/owner/repo" -> ("owner", "repo")
+fn extract_owner_and_repo(repo_url: &str) -> Result<(String, String)> {
+    let url = repo_url.trim_end_matches(".git");
+    let parts: Vec<&str> = url.split('/').collect();
+
+    if parts.len() < 2 {
+        anyhow::bail!("Invalid GitHub URL format: {}", repo_url);
+    }
+
+    let owner = parts[parts.len() - 2].to_string();
+    let repo_name = parts[parts.len() - 1].to_string();
+
+    Ok((owner, repo_name))
 }
 
 /// Log an informational message to stderr (won't interfere with stdout JSONL)
