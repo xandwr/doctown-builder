@@ -62,6 +62,17 @@ impl DocGenerator {
 
         // Call vLLM
         let response = self.client.generate(prompt).await?;
+
+        // Log token usage for this file
+        let (total_in, total_out) = self.client.get_token_stats();
+        log_info(&format!(
+            "[TOKENS] File: {} | Input: {} | Output: {} | Total: {}",
+            file_ast.file_path,
+            total_in,
+            total_out,
+            total_in + total_out
+        ));
+
         let response_text = VllmClient::extract_text(&response);
 
         // Parse LLM response as JSON
@@ -157,8 +168,9 @@ impl BatchProcessor {
         ));
 
         for (idx, (file_ast, source_code)) in files.into_iter().enumerate() {
-            log_info(&format!(
-                "[{}/{}] Processing: {}",
+            // Emit progress in a format the handler can parse
+            log_progress(&format!(
+                "Processing file {}/{}: {}",
                 idx + 1,
                 total,
                 file_ast.file_path
@@ -170,6 +182,12 @@ impl BatchProcessor {
                 .await
             {
                 Ok(content) => {
+                    let symbol_count = content.symbols.len();
+                    log_info(&format!(
+                        "✓ Generated {} symbols for {}",
+                        symbol_count,
+                        file_ast.file_path
+                    ));
                     results.push(content);
                 }
                 Err(e) => {
@@ -191,6 +209,13 @@ impl BatchProcessor {
             }
         }
 
+        log_info(&format!(
+            "Completed processing all {} files. Final token usage: {} input, {} output",
+            total,
+            self.generator.client.total_input_tokens,
+            self.generator.client.total_output_tokens
+        ));
+
         Ok(results)
     }
 
@@ -202,6 +227,12 @@ impl BatchProcessor {
 /// Log an informational message to stderr (won't interfere with stdout)
 fn log_info(message: &str) {
     eprintln!("[LOG] {}", message);
+    let _ = io::stderr().flush();
+}
+
+/// Log progress message to stderr (for Python handler to parse)
+fn log_progress(message: &str) {
+    eprintln!("[PROGRESS] {}", message);
     let _ = io::stderr().flush();
 }
 

@@ -189,22 +189,59 @@ def process_repository(job_input: Dict[str, Any]) -> Generator[Dict[str, Any], N
                     if not line:
                         continue
 
-                    if line.startswith("[LOG]"):
-                        log_msg = line[5:].strip()
-                        # Map progress messages to percentages
-                        progress = 50
-                        if "Generating documentation" in log_msg:
-                            progress = 60
-                        elif "Building .docpack" in log_msg:
-                            progress = 80
-                        elif "Uploaded to S3" in log_msg:
-                            progress = 95
+                    if line.startswith("[PROGRESS]"):
+                        # Parse progress messages like: "Processing file 3/10: src/main.rs"
+                        progress_msg = line[10:].strip()
+
+                        # Extract file count if present
+                        progress = 50  # Default for processing stage
+                        if "Processing file" in progress_msg:
+                            try:
+                                # Extract "X/Y" pattern
+                                import re
+                                match = re.search(r'(\d+)/(\d+)', progress_msg)
+                                if match:
+                                    current = int(match.group(1))
+                                    total = int(match.group(2))
+                                    # VLLM stage is 40-80% of total progress
+                                    vllm_progress = (current / total) * 40
+                                    progress = 40 + int(vllm_progress)
+                            except:
+                                pass
 
                         yield {
                             "status": "processing",
-                            "message": log_msg,
+                            "message": progress_msg,
                             "progress": progress
                         }
+                    elif line.startswith("[LOG]"):
+                        log_msg = line[5:].strip()
+                        # Map progress messages to percentages
+                        progress = 50
+                        if "Parsing" in log_msg or "Extracting" in log_msg:
+                            progress = 35
+                        elif "Processing" in log_msg and "files" in log_msg:
+                            progress = 40
+                        elif "Generating documentation" in log_msg or "Generating docs" in log_msg:
+                            progress = 50
+                        elif "Generated" in log_msg and "symbols" in log_msg:
+                            progress = 60
+                        elif "Building .docpack" in log_msg or "Building docpack" in log_msg:
+                            progress = 80
+                        elif "Uploading" in log_msg:
+                            progress = 90
+                        elif "Uploaded to S3" in log_msg:
+                            progress = 95
+                        elif "TOKENS" in log_msg:
+                            # Token tracking messages - show but don't change progress
+                            progress = None
+
+                        if progress is not None:
+                            yield {
+                                "status": "processing",
+                                "message": log_msg,
+                                "progress": progress
+                            }
                     elif line.startswith("[ERROR]"):
                         error_msg = line[7:].strip()
                         yield {
