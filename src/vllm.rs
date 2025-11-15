@@ -140,10 +140,16 @@ impl VllmClient {
             anyhow::bail!("API request failed with status {}: {}", status, error_text);
         }
 
-        let vllm_response = response
-            .json::<VllmResponse>()
-            .await
-            .context("Failed to parse response from RunPod API")?;
+        // Get the response text first for debugging
+        let response_text = response.text().await
+            .context("Failed to read response text from RunPod API")?;
+
+        // Log the raw response for debugging
+        eprintln!("[DEBUG] Raw API response: {}", response_text);
+
+        // Try to parse the response
+        let vllm_response = serde_json::from_str::<VllmResponse>(&response_text)
+            .context(format!("Failed to parse response from RunPod API. Response was: {}", response_text))?;
 
         // Track token usage
         for output in &vllm_response.output {

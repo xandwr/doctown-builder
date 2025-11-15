@@ -144,6 +144,7 @@ pub enum SymbolKind {
 pub struct DocpackBuilder {
     output_path: PathBuf,
     temp_dir: PathBuf,
+    _temp_dir_handle: tempfile::TempDir, // Keep handle alive to prevent deletion
     manifest_file: BufWriter<File>,
     tree_file: BufWriter<File>,
     content_file: BufWriter<File>,
@@ -154,7 +155,8 @@ impl DocpackBuilder {
         let output_path = output_path.as_ref().to_path_buf();
 
         // Create temp directory for building docpack contents
-        let temp_dir = tempfile::tempdir()?.path().to_path_buf();
+        let temp_dir_handle = tempfile::tempdir()?;
+        let temp_dir = temp_dir_handle.path().to_path_buf();
 
         // Create files
         let manifest_path = temp_dir.join("manifest.json");
@@ -171,6 +173,7 @@ impl DocpackBuilder {
         Ok(Self {
             output_path,
             temp_dir,
+            _temp_dir_handle: temp_dir_handle,
             manifest_file,
             tree_file,
             content_file,
