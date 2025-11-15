@@ -1,11 +1,12 @@
 # Multi-stage build for RunPod serverless deployment
 # Stage 1: Build the Rust binary
-FROM rust:1.83-slim AS builder
+FROM rustlang/rust:nightly-slim AS builder
 
-# Install build dependencies
+# Install build dependencies including git (for build metadata)
 RUN apt-get update && apt-get install -y \
     build-essential \
     pkg-config \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
