@@ -33,6 +33,9 @@ WORKDIR /app
 # Copy the compiled binary from builder
 COPY --from=builder /build/target/release/doctown-builder /app/doctown-builder
 
+# Make binary executable
+RUN chmod +x /app/doctown-builder
+
 # Copy Python handler and requirements
 COPY handler.py /app/handler.py
 COPY requirements.txt /app/requirements.txt

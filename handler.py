@@ -75,6 +75,18 @@ def process_repository(job_input: Dict[str, Any]) -> Generator[Dict[str, Any], N
     zip_path = os.path.join(temp_dir, "repo.zip")
 
     try:
+        # Step 0: Verify binary exists
+        binary_path = "/app/doctown-builder"
+        if not os.path.exists(binary_path):
+            yield {
+                "error": f"Binary not found at {binary_path}",
+                "status": "failed"
+            }
+            return
+
+        print(f"[RunPod] Binary found at {binary_path}", file=sys.stderr)
+        sys.stderr.flush()
+
         # Step 1: Download repository ZIP
         yield {
             "status": "downloading",
@@ -99,105 +111,83 @@ def process_repository(job_input: Dict[str, Any]) -> Generator[Dict[str, Any], N
 
         # Execute the Rust binary
         binary_path = "/app/doctown-builder"
-        process = subprocess.Popen(
-            [binary_path, zip_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,  # Line buffered
-            universal_newlines=True
-        )
 
-        jsonl_lines = []
-        file_count = 0
+        print(f"[RunPod] Executing: {binary_path} {zip_path}", file=sys.stderr)
+        sys.stderr.flush()
 
-        # We need to read both stdout and stderr concurrently
-        # Use threads to avoid blocking
-        import threading
-        import queue
+        # Use subprocess.run with capture for simpler handling
+        try:
+            result = subprocess.run(
+                [binary_path, zip_path],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout
+            )
 
-        stdout_queue = queue.Queue()
-        stderr_queue = queue.Queue()
+            print(f"[RunPod] Process completed with code {result.returncode}", file=sys.stderr)
+            sys.stderr.flush()
 
-        def read_stdout():
-            if process.stdout:
-                for line in process.stdout:
-                    stdout_queue.put(('stdout', line.strip()))
-                stdout_queue.put(('stdout', None))  # Signal EOF
+            # Check for errors
+            if result.returncode != 0:
+                error_msg = result.stderr if result.stderr else "Unknown error"
+                print(f"[RunPod] Process error: {error_msg}", file=sys.stderr)
+                sys.stderr.flush()
+                yield {
+                    "error": f"Process failed: {error_msg}",
+                    "status": "failed"
+                }
+                return
 
-        def read_stderr():
-            if process.stderr:
-                for line in process.stderr:
-                    stderr_queue.put(('stderr', line.strip()))
-                stderr_queue.put(('stderr', None))  # Signal EOF
+            # Parse stderr for log messages
+            if result.stderr:
+                for line in result.stderr.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
 
-        # Start reader threads
-        stdout_thread = threading.Thread(target=read_stdout)
-        stderr_thread = threading.Thread(target=read_stderr)
-        stdout_thread.daemon = True
-        stderr_thread.daemon = True
-        stdout_thread.start()
-        stderr_thread.start()
+                    if line.startswith("[LOG]"):
+                        log_msg = line[5:].strip()
+                        yield {
+                            "status": "processing",
+                            "message": log_msg,
+                            "progress": 50
+                        }
+                    elif line.startswith("[ERROR]"):
+                        error_msg = line[7:].strip()
+                        yield {
+                            "status": "processing",
+                            "message": f"ERROR: {error_msg}",
+                            "progress": 50
+                        }
 
-        # Read from both streams
-        stdout_done = False
-        stderr_done = False
+            # Parse stdout for JSONL data
+            jsonl_lines = []
+            if result.stdout:
+                for line in result.stdout.split('\n'):
+                    line = line.strip()
+                    if line:
+                        jsonl_lines.append(line)
+                        # Yield each JSONL line
+                        yield {
+                            "status": "processing",
+                            "data_chunk": line
+                        }
 
-        while not (stdout_done and stderr_done):
-            # Check stderr first for log messages
-            try:
-                stream_type, line = stderr_queue.get(timeout=0.1)
-                if line is None:
-                    stderr_done = True
-                    continue
+            file_count = len(jsonl_lines)
+            print(f"[RunPod] Processed {file_count} files", file=sys.stderr)
+            sys.stderr.flush()
 
-                # Parse log messages from stderr
-                if line.startswith("[LOG]"):
-                    log_msg = line[5:].strip()
-                    yield {
-                        "status": "processing",
-                        "message": log_msg,
-                        "progress": min(40 + file_count, 90)
-                    }
-                elif line.startswith("[ERROR]"):
-                    error_msg = line[7:].strip()
-                    yield {
-                        "status": "processing",
-                        "message": f"ERROR: {error_msg}",
-                        "progress": min(40 + file_count, 90)
-                    }
-            except queue.Empty:
-                pass
-
-            # Check stdout for JSONL data
-            try:
-                stream_type, line = stdout_queue.get(timeout=0.1)
-                if line is None:
-                    stdout_done = True
-                    continue
-
-                if line:
-                    # This is JSONL data
-                    jsonl_lines.append(line)
-                    file_count += 1
-
-                    # Yield the data chunk for streaming
-                    yield {
-                        "status": "processing",
-                        "data_chunk": line
-                    }
-            except queue.Empty:
-                pass
-
-        # Wait for threads and process to complete
-        stdout_thread.join()
-        stderr_thread.join()
-        return_code = process.wait()
-
-        # Check for errors
-        if return_code != 0:
+        except subprocess.TimeoutExpired:
             yield {
-                "error": f"Process failed with exit code {return_code}",
+                "error": "Process timed out after 5 minutes",
+                "status": "failed"
+            }
+            return
+        except Exception as e:
+            print(f"[RunPod] Subprocess error: {e}", file=sys.stderr)
+            sys.stderr.flush()
+            yield {
+                "error": f"Failed to execute builder: {str(e)}",
                 "status": "failed"
             }
             return
@@ -251,9 +241,20 @@ def handler(job: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
     # Log job start
     print(f"[RunPod] Starting job {job.get('id')}", file=sys.stderr)
     print(f"[RunPod] Input: {job_input}", file=sys.stderr)
+    sys.stderr.flush()
 
-    # Process and yield updates
-    yield from process_repository(job_input)
+    try:
+        # Process and yield updates
+        yield from process_repository(job_input)
+    except Exception as e:
+        print(f"[RunPod] Handler error: {e}", file=sys.stderr)
+        sys.stderr.flush()
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        yield {
+            "error": f"Handler exception: {str(e)}",
+            "status": "failed"
+        }
 
 
 if __name__ == "__main__":
