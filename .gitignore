@@ -1,3 +1,6 @@
 /target
 /output
 /test-sources
+*.env
+*.env.*
+!.env.example

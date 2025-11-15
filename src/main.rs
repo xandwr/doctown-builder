@@ -1,7 +1,24 @@
+mod docpack;
+mod generator;
+mod vllm;
+
 use anyhow::{Context, Result};
+use chrono::Utc;
+use docpack::{
+    DocpackBuilder, GeneratorInfo, Manifest, Stats, TreeEntry, DOCPACK_FORMAT_VERSION,
+    GENERATOR_NAME, GENERATOR_VERSION,
+};
+use generator::BatchProcessor;
 use serde::Serialize;
-use std::{collections::HashMap, env, fs::File, io::{self, Write}, path::Path};
+use std::{
+    collections::HashMap,
+    env,
+    fs::File,
+    io::{self, Write},
+    path::Path,
+};
 use tree_sitter::{Language, Node, Parser};
+use vllm::VllmClient;
 use walkdir::WalkDir;
 
 // File size threshold: skip files larger than 512KB
@@ -52,36 +69,123 @@ struct FileAst {
     ast: AstNode,
 }
 
-fn main() -> Result<()> {
-    // Get zip path from command-line arguments
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Load environment variables
+    dotenv::dotenv().ok();
+
+    // Get command-line arguments
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        log_error("Usage: doctown-builder <path-to-zip-file>");
-        anyhow::bail!("Missing required argument: path to zip file");
+    if args.len() < 5 {
+        log_error("Usage: doctown-builder <zip-file> <repo-url> <commit-hash> <output-docpack>");
+        log_error(
+            "Example: doctown-builder repo.zip https://github.com/user/repo abc123 output.docpack",
+        );
+        anyhow::bail!("Missing required arguments");
     }
 
     let zip_path = &args[1];
-    log_info(&format!("Starting doctown-builder with: {}", zip_path));
+    let repo_url = &args[2];
+    let commit_hash = &args[3];
+    let output_path = &args[4];
 
-    // Create a temporary directory that will be automatically cleaned up
+    log_info(&format!("Starting doctown-builder"));
+    log_info(&format!("  Repo: {}", repo_url));
+    log_info(&format!("  Commit: {}", commit_hash));
+    log_info(&format!("  Output: {}", output_path));
+
+    // Step 1: Extract zip to temporary directory
+    log_info("Step 1: Extracting ZIP file...");
     let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
     let temp_path = temp_dir.path();
-
-    // Extract zip to temporary directory
-    log_info("Extracting ZIP file...");
     ingest_zip(zip_path, temp_path)?;
-    log_info("ZIP extraction complete");
+    log_info("✓ ZIP extraction complete");
 
-    // Create parser pool for reuse
+    // Step 2: Parse all files and collect AST + source code
+    log_info("Step 2: Parsing source files...");
     let mut parser_pool = ParserPool::new()?;
+    let parsed_files = parse_directory_collect(temp_path, &mut parser_pool)?;
+    log_info(&format!("✓ Parsed {} files", parsed_files.len()));
 
-    // Parse all supported files in the extracted directory with streaming output
-    log_info("Starting AST parsing...");
-    parse_directory_streaming(temp_path, &mut parser_pool, &mut std::io::stdout())?;
-    log_info("AST parsing complete");
+    // Step 3: Initialize vLLM client
+    log_info("Step 3: Connecting to vLLM endpoint...");
+    let vllm_client = VllmClient::from_env()?;
+    log_info("✓ vLLM client initialized");
 
-    // temp_dir is automatically cleaned up when it goes out of scope
+    // Step 4: Generate documentation using LLM
+    log_info("Step 4: Generating documentation with AI...");
+    let mut batch_processor = BatchProcessor::new(vllm_client, 1);
+    let content_entries = batch_processor.process_files(parsed_files).await?;
+    let (tokens_in, tokens_out) = batch_processor.get_token_stats();
+    log_info(&format!(
+        "✓ Generated docs ({} input tokens, {} output tokens)",
+        tokens_in, tokens_out
+    ));
+
+    // Step 5: Build docpack
+    log_info("Step 5: Building .docpack file...");
+
+    // Re-parse to get file list again (since we moved parsed_files)
+    let mut parser_pool2 = ParserPool::new()?;
+    let parsed_files2 = parse_directory_collect(temp_path, &mut parser_pool2)?;
+
+    let mut docpack_builder = DocpackBuilder::new(output_path)?;
+
+    // Write manifest
+    let symbols_total: usize = content_entries.iter().map(|e| e.symbols.len()).sum();
+    let manifest = Manifest {
+        docpack_format: DOCPACK_FORMAT_VERSION,
+        name: extract_repo_name(repo_url),
+        repo: repo_url.to_string(),
+        commit: commit_hash.to_string(),
+        generated_at: Utc::now(),
+        version: commit_hash.to_string(),
+        generator: GeneratorInfo {
+            name: GENERATOR_NAME.to_string(),
+            version: GENERATOR_VERSION.to_string(),
+            model: "qwen2.5-coder-14b-instruct".to_string(),
+        },
+        stats: Stats {
+            files_total: parsed_files2.len(),
+            symbols_total,
+            tokens_input: tokens_in,
+            tokens_output: tokens_out,
+        },
+    };
+    docpack_builder.write_manifest(&manifest)?;
+
+    // Write tree entries (file metadata)
+    for (file_ast, source_code) in &parsed_files2 {
+        let loc = source_code.lines().count();
+        let entry = TreeEntry::file(
+            file_ast.file_path.clone(),
+            file_ast.language.clone(),
+            source_code.as_bytes(),
+            loc,
+        );
+        docpack_builder.write_tree_entry(&entry)?;
+    }
+
+    // Write content entries (AI-generated docs)
+    for content in content_entries {
+        docpack_builder.write_content_entry(&content)?;
+    }
+
+    // Finalize and create zip
+    let final_path = docpack_builder.finalize()?;
+    log_info(&format!("✓ Docpack created: {}", final_path.display()));
+
+    log_info("✅ Pipeline complete!");
     Ok(())
+}
+
+fn extract_repo_name(repo_url: &str) -> String {
+    repo_url
+        .trim_end_matches(".git")
+        .split('/')
+        .last()
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 /// Log an informational message to stderr (won't interfere with stdout JSONL)
@@ -141,6 +245,85 @@ pub fn ingest_zip<Z: AsRef<Path>, O: AsRef<Path>>(zip_path: Z, out_dir: O) -> Re
         .extract(out_dir)
         .context("Failed to extract zip archive")?;
     Ok(())
+}
+
+fn parse_directory_collect(
+    dir: &Path,
+    parser_pool: &mut ParserPool,
+) -> Result<Vec<(FileAst, String)>> {
+    let mut results = Vec::new();
+
+    // Collect all files
+    let all_files: Vec<_> = WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .collect();
+
+    let total_files = all_files.len();
+    log_info(&format!("Found {} files to scan", total_files));
+
+    for entry in all_files {
+        let path = entry.path();
+
+        // Skip files larger than 512KB
+        let size = match std::fs::metadata(path) {
+            Ok(metadata) => metadata.len(),
+            Err(_) => continue,
+        };
+        if size > MAX_FILE_SIZE {
+            log_info(&format!(
+                "Skipping large file: {} ({} bytes)",
+                path.display(),
+                size
+            ));
+            continue;
+        }
+
+        // Determine language from file extension
+        let language = match path.extension().and_then(|s| s.to_str()) {
+            Some("rs") => "rust",
+            Some("py") => "python",
+            Some("js") | Some("jsx") => "javascript",
+            Some("ts") | Some("tsx") => "typescript",
+            Some("go") => "go",
+            _ => continue, // Skip unsupported file types
+        };
+
+        // Get relative path
+        let relative_path = path
+            .strip_prefix(dir)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+
+        // Read source code
+        let source_code = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) => {
+                log_error(&format!("Failed to read {}: {}", relative_path, e));
+                continue;
+            }
+        };
+
+        // Parse the file
+        match parse_file_with_pool(path, language, parser_pool) {
+            Ok(ast) => {
+                let file_ast = FileAst {
+                    file_path: relative_path.clone(),
+                    language: language.to_string(),
+                    ast,
+                };
+                results.push((file_ast, source_code));
+            }
+            Err(e) => {
+                log_error(&format!("Failed to parse {}: {}", relative_path, e));
+            }
+        }
+    }
+
+    log_info(&format!("Successfully parsed {} files", results.len()));
+    Ok(results)
 }
 
 fn parse_directory_streaming<W: Write>(
