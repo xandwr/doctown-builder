@@ -70,7 +70,7 @@ impl VllmClient {
 
     /// Get the API endpoint URL
     fn endpoint_url(&self) -> String {
-        format!("https://api.runpod.ai/v2/{}/run", self.endpoint_id)
+        format!("https://api.runpod.ai/v2/{}/runsync", self.endpoint_id)
     }
 
     /// Send a prompt to the vLLM endpoint and get the response
