@@ -48,22 +48,22 @@ pub fn package_outputs(
     let mut files_included = 0;
     let mut total_size = 0;
 
-    // Define files to include in the package
+    // Define files to include in the package (using temp files)
     let files_to_package = vec![
         (
-            format!("{}/docpack-graph.json", output_dir),
+            format!("{}/.temp-graph.json", output_dir),
             "graph.json".to_string(),
         ),
         (
-            format!("{}/docpack-documentation.json", output_dir),
+            format!("{}/.temp-documentation.json", output_dir),
             "documentation.json".to_string(),
         ),
     ];
 
     // Add each file to the zip
-    for (source_path, archive_name) in files_to_package {
-        if let Ok(content) = std::fs::read(&source_path) {
-            zip.start_file(&archive_name, options)?;
+    for (source_path, archive_name) in &files_to_package {
+        if let Ok(content) = std::fs::read(source_path) {
+            zip.start_file(archive_name, options)?;
             zip.write_all(&content)?;
             total_size += content.len();
             files_included += 1;
@@ -89,8 +89,15 @@ pub fn package_outputs(
 
     zip.finish()?;
 
+    // Clean up temporary files
+    for (source_path, _) in &files_to_package {
+        if Path::new(source_path).exists() {
+            let _ = std::fs::remove_file(source_path);
+        }
+    }
+
     Ok(PackageResult {
-        output_path: docpack_name,
+        output_path: docpack_name.clone(),
         files_included,
         total_size_bytes: total_size,
     })
@@ -118,7 +125,7 @@ fn generate_docpack_name(input_name: &str) -> String {
         base_name
     };
 
-    format!("{}.docpack", final_name)
+    format!("output/{}.docpack", final_name)
 }
 
 /// Generate metadata JSON

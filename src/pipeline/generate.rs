@@ -85,37 +85,38 @@ pub async fn generate_documentation(
         "   🤖 Generating documentation with OpenAI {}...",
         config.model
     );
+    println!("   ⚡ Running all generation tasks in parallel...");
 
-    let mut total_tokens = 0;
+    // Run all three generation steps in parallel for maximum speed
+    let symbols_future = generate_symbol_summaries(graph, config);
+    let modules_future = generate_module_overviews(graph, config);
+    let architecture_future = generate_architecture_overview(graph, config);
 
-    // Step 1: Generate symbol summaries
-    println!("   📝 Generating symbol summaries...");
-    let (symbol_summaries, tokens) = generate_symbol_summaries(graph, config).await?;
-    total_tokens += tokens;
+    let (symbols_result, modules_result, architecture_result) =
+        tokio::join!(symbols_future, modules_future, architecture_future);
+
+    // Handle results
+    let (symbol_summaries, symbols_tokens) = symbols_result?;
     println!(
         "      ✓ Generated {} symbol summaries ({} tokens)",
         symbol_summaries.len(),
-        tokens
+        symbols_tokens
     );
 
-    // Step 2: Generate module overviews
-    println!("   📦 Generating module overviews...");
-    let (module_overviews, tokens) = generate_module_overviews(graph, config).await?;
-    total_tokens += tokens;
+    let (module_overviews, modules_tokens) = modules_result?;
     println!(
         "      ✓ Generated {} module overviews ({} tokens)",
         module_overviews.len(),
-        tokens
+        modules_tokens
     );
 
-    // Step 3: Generate architecture overview
-    println!("   🏗️  Generating architecture overview...");
-    let (architecture_overview, tokens) = generate_architecture_overview(graph, config).await?;
-    total_tokens += tokens;
+    let (architecture_overview, arch_tokens) = architecture_result?;
     println!(
         "      ✓ Generated architecture overview ({} tokens)",
-        tokens
+        arch_tokens
     );
+
+    let total_tokens = symbols_tokens + modules_tokens + arch_tokens;
 
     Ok(GenerationResult {
         symbol_summaries,
@@ -408,123 +409,188 @@ async fn generate_module_overviews(
         .take(20) // Limit modules
         .collect();
 
-    // Process modules in parallel
-    let module_futures: Vec<_> = modules
-        .iter()
-        .map(|module| generate_module_doc(graph, module, config))
+    if modules.is_empty() {
+        return Ok((overviews, 0));
+    }
+
+    // Batch modules into groups of 5 to reduce API calls while keeping prompts manageable
+    let batch_size = 5;
+    let batches: Vec<Vec<&Node>> = modules
+        .chunks(batch_size)
+        .map(|chunk| chunk.to_vec())
         .collect();
 
-    let results = join_all(module_futures).await;
+    println!("      Processing {} modules in {} batches", modules.len(), batches.len());
+
+    // Process batches in parallel
+    let batch_futures: Vec<_> = batches
+        .iter()
+        .map(|batch| generate_module_batch(graph, batch.as_slice(), config))
+        .collect();
+
+    let results = join_all(batch_futures).await;
 
     // Collect results
-    for (module, result) in modules.iter().zip(results) {
-        let (doc, tokens) = result?;
+    for result in results {
+        let (batch_overviews, tokens) = result?;
         total_tokens += tokens;
-        overviews.insert(module.id.clone(), doc);
+        overviews.extend(batch_overviews);
     }
 
     Ok((overviews, total_tokens))
 }
 
-/// Generate documentation for a single module
-async fn generate_module_doc(
+/// Generate documentation for a batch of modules
+async fn generate_module_batch(
     graph: &DocpackGraph,
-    module: &Node,
+    modules: &[&Node],
     config: &GenerationConfig,
-) -> Result<(ModuleDoc, usize), Box<dyn std::error::Error>> {
-    let module_data = if let NodeKind::Module(m) = &module.kind {
-        m
-    } else {
-        return Err("Not a module node".into());
-    };
+) -> Result<(HashMap<String, ModuleDoc>, usize), Box<dyn std::error::Error>> {
+    if modules.is_empty() {
+        return Ok((HashMap::new(), 0));
+    }
 
-    // Find symbols that belong to this module by examining the module's file location
-    // Since module.children is not populated, we need to find symbols in the same file
-    let module_file = &module.location.file;
-    let module_symbols: Vec<&Node> = graph
-        .nodes
-        .values()
-        .filter(|n| {
-            // Include symbols from the same file that aren't modules themselves
-            n.location.file == *module_file && !matches!(n.kind, NodeKind::Module(_))
-        })
-        .collect();
-
-    // Build facts about the module
-    let mut prompt = format!(
-        "You are a technical documentation writer. Describe this module based ONLY on the provided facts.\n\n"
+    let mut prompt = String::from(
+        "You are a technical documentation writer. For each module below, provide a concise description based ONLY on the facts provided.\n\n",
     );
-    prompt.push_str(&format!("MODULE: {}\n", module_data.name));
-    prompt.push_str(&format!("Path: {}\n", module_data.path));
-    prompt.push_str(&format!("Public: {}\n", module_data.is_public));
-    prompt.push_str(&format!("Child symbols: {}\n", module_symbols.len()));
 
-    // List key symbols
-    let key_symbols: Vec<String> = module_symbols
-        .iter()
-        .filter(|n| n.metadata.is_public_api || n.is_public())
-        .take(10)
-        .map(|n| {
-            format!(
-                "{} ({})",
-                n.name(),
-                match n.kind {
-                    NodeKind::Function(_) => "fn",
-                    NodeKind::Type(_) => "type",
-                    _ => "other",
-                }
-            )
-        })
-        .collect();
+    // Build facts for each module
+    for (idx, module) in modules.iter().enumerate() {
+        let module_data = if let NodeKind::Module(m) = &module.kind {
+            m
+        } else {
+            continue;
+        };
 
-    if !key_symbols.is_empty() {
-        prompt.push_str(&format!("\nKey public symbols:\n"));
-        for sym in &key_symbols {
-            prompt.push_str(&format!("  - {}\n", sym));
+        prompt.push_str(&format!("\n=== MODULE {} ===\n", idx + 1));
+        prompt.push_str(&format!("Name: {}\n", module_data.name));
+        prompt.push_str(&format!("Path: {}\n", module_data.path));
+        prompt.push_str(&format!("Public: {}\n", module_data.is_public));
+
+        // Find symbols in this module
+        let module_file = &module.location.file;
+        let module_symbols: Vec<&Node> = graph
+            .nodes
+            .values()
+            .filter(|n| n.location.file == *module_file && !matches!(n.kind, NodeKind::Module(_)))
+            .collect();
+
+        prompt.push_str(&format!("Child symbols: {}\n", module_symbols.len()));
+
+        // List key public symbols
+        let key_symbols: Vec<String> = module_symbols
+            .iter()
+            .filter(|n| n.metadata.is_public_api || n.is_public())
+            .take(8)
+            .map(|n| format!("{} ({})", n.name(), match n.kind {
+                NodeKind::Function(_) => "fn",
+                NodeKind::Type(_) => "type",
+                _ => "other",
+            }))
+            .collect();
+
+        if !key_symbols.is_empty() {
+            prompt.push_str("Key public symbols:\n");
+            for sym in &key_symbols {
+                prompt.push_str(&format!("  - {}\n", sym));
+            }
+        }
+
+        // Module dependencies
+        let imports: Vec<_> = graph
+            .get_outgoing_edges(&module.id)
+            .iter()
+            .filter(|e| matches!(e.kind, EdgeKind::Imports))
+            .map(|e| &e.target)
+            .take(5)
+            .collect();
+
+        if !imports.is_empty() {
+            prompt.push_str(&format!(
+                "Imports: {}\n",
+                imports.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            ));
         }
     }
 
-    // Module dependencies
-    let imports: Vec<_> = graph
-        .get_outgoing_edges(&module.id)
-        .iter()
-        .filter(|e| matches!(e.kind, EdgeKind::Imports))
-        .map(|e| &e.target)
-        .take(5)
-        .collect();
+    prompt.push_str("\n\nProvide a JSON object with a 'modules' array. Each entry should have:\n");
+    prompt.push_str("- module_index: The module number (1-based)\n");
+    prompt.push_str("- responsibilities: Module responsibilities (1-2 sentences)\n");
+    prompt.push_str("- interactions: How it interacts with other modules (1-2 sentences)\n\n");
+    prompt.push_str("Return valid JSON:\n");
+    prompt.push_str(r#"{"modules": [{"module_index": 1, "responsibilities": "...", "interactions": "..."}]}"#);
 
-    if !imports.is_empty() {
-        prompt.push_str(&format!(
-            "\nImports: {}\n",
-            imports
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-
-    prompt.push_str("\n\nProvide:\n");
-    prompt.push_str("1. Module responsibilities (1-2 sentences)\n");
-    prompt.push_str("2. How it interacts with other modules\n");
-    prompt.push_str("\nFormat:\nResponsibilities: ...\nInteractions: ...\n");
-
-    let response = call_openai(config, &prompt).await?;
+    // Call OpenAI with JSON mode
+    let response = call_openai_json(config, &prompt).await?;
     let tokens = estimate_tokens(&prompt) + estimate_tokens(&response);
 
     // Parse response
-    let responsibilities = extract_field(&response, "Responsibilities:");
-    let interactions = extract_field(&response, "Interactions:");
+    let parsed = parse_module_json_response(&response, modules, graph)?;
 
-    Ok((
-        ModuleDoc {
-            module_name: module_data.name.clone(),
-            responsibilities,
-            key_symbols: key_symbols.iter().take(5).cloned().collect(),
-            interactions,
-        },
-        tokens,
-    ))
+    Ok((parsed, tokens))
+}
+
+/// JSON structures for module batch response
+#[derive(Debug, Deserialize)]
+struct ModuleBatchResponse {
+    modules: Vec<ModuleResponseItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModuleResponseItem {
+    module_index: usize,
+    responsibilities: String,
+    interactions: String,
+}
+
+/// Parse JSON response for module overviews
+fn parse_module_json_response(
+    response: &str,
+    modules: &[&Node],
+    graph: &DocpackGraph,
+) -> Result<HashMap<String, ModuleDoc>, Box<dyn std::error::Error>> {
+    let mut overviews = HashMap::new();
+
+    let batch: ModuleBatchResponse = serde_json::from_str(response).map_err(|e| {
+        eprintln!("Failed to parse module JSON response. Error: {}", e);
+        eprintln!("Response (first 500 chars): {}", &response.chars().take(500).collect::<String>());
+        format!("JSON parsing error: {}", e)
+    })?;
+
+    for item in batch.modules {
+        let idx = item.module_index;
+        if idx > 0 && idx <= modules.len() {
+            let module = modules[idx - 1];
+            if let NodeKind::Module(module_data) = &module.kind {
+                // Get key symbols for this module
+                let module_file = &module.location.file;
+                let key_symbols: Vec<String> = graph
+                    .nodes
+                    .values()
+                    .filter(|n| n.location.file == *module_file && !matches!(n.kind, NodeKind::Module(_)))
+                    .filter(|n| n.metadata.is_public_api || n.is_public())
+                    .take(5)
+                    .map(|n| format!("{} ({})", n.name(), match n.kind {
+                        NodeKind::Function(_) => "fn",
+                        NodeKind::Type(_) => "type",
+                        _ => "other",
+                    }))
+                    .collect();
+
+                overviews.insert(
+                    module.id.clone(),
+                    ModuleDoc {
+                        module_name: module_data.name.clone(),
+                        responsibilities: item.responsibilities,
+                        key_symbols,
+                        interactions: item.interactions,
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(overviews)
 }
 
 /// Generate architecture overview

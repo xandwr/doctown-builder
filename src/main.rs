@@ -168,17 +168,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Ensure output directory exists, then save the graph to a file
+    // Ensure output directory exists
     let output_dir = Path::new("output");
     if !output_dir.exists() {
         std::fs::create_dir_all(output_dir)?;
         println!("   ✓ Created output directory {:?}", output_dir);
     }
 
-    let output_path = "output/docpack-graph.json";
-    println!("\n💾 Saving graph to {}...", output_path);
-    graph.save_to_file(output_path)?;
-    println!("   ✓ Graph saved successfully!");
+    // Save graph to temporary location (will be packaged into .docpack)
+    let temp_graph_path = "output/.temp-graph.json";
+    println!("\n💾 Preparing graph data...");
+    graph.save_to_file(temp_graph_path)?;
+    println!("   ✓ Graph data ready!");
 
     println!("\n🟥 Phase 6: Generating documentation with LLM...");
     let gen_config = pipeline::generate::GenerationConfig::default();
@@ -204,15 +205,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\nArchitecture Overview:");
             println!("   {}", result.architecture_overview.overview);
 
-            // Save documentation to file
-            let doc_path = "output/docpack-documentation.json";
-            println!("\n💾 Saving documentation to {}...", doc_path);
-            pipeline::generate::save_documentation(&result, doc_path)?;
-            println!("   ✓ Documentation saved successfully!");
-
-            println!("\nDocpack generation complete!");
-            println!("   Graph: {}", output_path);
-            println!("   Docs: {}", doc_path);
+            // Save documentation to temporary location (will be packaged into .docpack)
+            let temp_doc_path = "output/.temp-documentation.json";
+            println!("\n💾 Preparing documentation data...");
+            pipeline::generate::save_documentation(&result, temp_doc_path)?;
+            println!("   ✓ Documentation data ready!");
 
             // Phase 7: Package everything into a .docpack file
             println!("\n📦 Phase 7: Packaging outputs...");
