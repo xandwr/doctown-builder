@@ -213,11 +213,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\nDocpack generation complete!");
             println!("   Graph: {}", output_path);
             println!("   Docs: {}", doc_path);
+
+            // Phase 7: Package everything into a .docpack file
+            println!("\n📦 Phase 7: Packaging outputs...");
+            let package_config = pipeline::package::PackageConfig::default();
+            match pipeline::package::package_outputs(input, "output", &package_config) {
+                Ok(package_result) => {
+                    println!("\n✅ Packaging complete!");
+                    println!("   📦 Output: {}", package_result.output_path);
+                    println!("   📄 Files included: {}", package_result.files_included);
+                    println!(
+                        "   💾 Total size: {:.2} KB",
+                        package_result.total_size_bytes as f64 / 1024.0
+                    );
+                    println!("\n🎉 All done! Your .docpack is ready to use.");
+                }
+                Err(e) => {
+                    eprintln!("\n⚠️  Warning: Could not create .docpack: {}", e);
+                    eprintln!("   Individual files are still available in the output/ directory");
+                }
+            }
         }
         Err(e) => {
             eprintln!("\n❌ Error generating documentation: {}", e);
             eprintln!("   Make sure OPENAI_API_KEY is set in your .env file");
             eprintln!("   Continuing without LLM-generated documentation...");
+
+            // Still try to package what we have (graph only)
+            println!("\n📦 Phase 7: Packaging outputs...");
+            let package_config = pipeline::package::PackageConfig::default();
+            match pipeline::package::package_outputs(input, "output", &package_config) {
+                Ok(package_result) => {
+                    println!("\n✅ Packaging complete (graph only)!");
+                    println!("   📦 Output: {}", package_result.output_path);
+                    println!("   📄 Files included: {}", package_result.files_included);
+                }
+                Err(e) => {
+                    eprintln!("\n⚠️  Warning: Could not create .docpack: {}", e);
+                }
+            }
         }
     }
 
