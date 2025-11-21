@@ -4,6 +4,7 @@ mod pipeline;
 use graph::builder::build_graph;
 use pipeline::ingest::{InputSource, ingest};
 use std::env;
+use std::path::Path;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -159,7 +160,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Save the graph to a file
+    // Ensure output directory exists, then save the graph to a file
+    let output_dir = Path::new("output");
+    if !output_dir.exists() {
+        std::fs::create_dir_all(output_dir)?;
+        println!("   ✓ Created output directory {:?}", output_dir);
+    }
+
     let output_path = "output/docpack-graph.json";
     println!("\n💾 Saving graph to {}...", output_path);
     graph.save_to_file(output_path)?;

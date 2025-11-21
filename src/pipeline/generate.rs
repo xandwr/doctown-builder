@@ -1,7 +1,7 @@
 // Pipeline Phase 5: LLM Documentation Generation
 // Uses OpenAI to generate human-readable documentation from graph facts
 
-use crate::graph::{DocpackGraph, EdgeKind, Node, NodeKind};
+use crate::graph::{DocpackGraph, EdgeKind, Node, NodeId, NodeKind};
 use futures::future::join_all;
 use openai::Credentials;
 use openai::chat::{
@@ -31,7 +31,7 @@ impl Default for GenerationConfig {
             credentials: Credentials::new(api_key, base_url),
             model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string()),
             max_completion_tokens: 8000, // 8k token limit per batch
-            temperature: 1.0,
+            temperature: 0.2,
         }
     }
 }
@@ -53,6 +53,9 @@ pub struct SymbolDoc {
     pub explanation: String,
     pub complexity_notes: Option<String>,
     pub usage_hints: Option<String>,
+    pub caller_references: Vec<String>,
+    pub callee_references: Vec<String>,
+    pub semantic_cluster: Option<String>,
 }
 
 /// Documentation for a module
@@ -214,10 +217,48 @@ async fn generate_symbol_batch(
     let tokens = estimate_tokens(&prompt) + estimate_tokens(&response);
 
     // Parse JSON response
-    let parsed = parse_symbol_json_response(&response, nodes)?;
+    let parsed = parse_symbol_json_response(&response, nodes, graph)?;
     summaries.extend(parsed);
 
     Ok((summaries, tokens))
+}
+
+/// Helper function to find which cluster a node belongs to
+fn get_node_cluster(graph: &DocpackGraph, node_id: &NodeId) -> Option<String> {
+    // Find cluster nodes that have this node as a member
+    for edge in graph.get_incoming_edges(node_id) {
+        if matches!(edge.kind, EdgeKind::ModuleOwnership) {
+            if let Some(cluster_node) = graph.nodes.get(&edge.source) {
+                if let NodeKind::Cluster(cluster) = &cluster_node.kind {
+                    return Some(cluster.name.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Helper function to get caller/callee names instead of just IDs
+fn get_caller_names(graph: &DocpackGraph, node_id: &NodeId) -> Vec<String> {
+    graph
+        .get_incoming_edges(node_id)
+        .iter()
+        .filter(|e| matches!(e.kind, EdgeKind::Calls))
+        .filter_map(|e| graph.nodes.get(&e.source))
+        .map(|n| n.name())
+        .take(5)
+        .collect()
+}
+
+fn get_callee_names(graph: &DocpackGraph, node_id: &NodeId) -> Vec<String> {
+    graph
+        .get_outgoing_edges(node_id)
+        .iter()
+        .filter(|e| matches!(e.kind, EdgeKind::Calls))
+        .filter_map(|e| graph.nodes.get(&e.target))
+        .map(|n| n.name())
+        .take(5)
+        .collect()
 }
 
 /// Format facts about a symbol for the LLM
@@ -231,6 +272,11 @@ fn format_symbol_facts(graph: &DocpackGraph, node: &Node) -> String {
         node.location.file, node.location.start_line
     ));
     facts.push_str(&format!("Public API: {}\n", node.metadata.is_public_api));
+
+    // Add cluster information
+    if let Some(cluster) = get_node_cluster(graph, &node.id) {
+        facts.push_str(&format!("Cluster: \"{}\"\n", cluster));
+    }
 
     match &node.kind {
         NodeKind::Function(f) => {
@@ -270,43 +316,15 @@ fn format_symbol_facts(graph: &DocpackGraph, node: &Node) -> String {
         facts.push_str(&format!("Existing Doc: {}\n", doc));
     }
 
-    // Add call relationships
-    let callers: Vec<_> = graph
-        .get_incoming_edges(&node.id)
-        .iter()
-        .filter(|e| matches!(e.kind, EdgeKind::Calls))
-        .map(|e| &e.source)
-        .take(3)
-        .collect();
-
+    // Add call relationships with actual names
+    let callers = get_caller_names(graph, &node.id);
     if !callers.is_empty() {
-        facts.push_str(&format!(
-            "Called by: {}\n",
-            callers
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        facts.push_str(&format!("Called by: {}\n", callers.join(", ")));
     }
 
-    let callees: Vec<_> = graph
-        .get_outgoing_edges(&node.id)
-        .iter()
-        .filter(|e| matches!(e.kind, EdgeKind::Calls))
-        .map(|e| &e.target)
-        .take(3)
-        .collect();
-
+    let callees = get_callee_names(graph, &node.id);
     if !callees.is_empty() {
-        facts.push_str(&format!(
-            "Calls: {}\n",
-            callees
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        facts.push_str(&format!("Calls: {}\n", callees.join(", ")));
     }
 
     facts
@@ -331,6 +349,7 @@ struct SymbolResponseItem {
 fn parse_symbol_json_response(
     response: &str,
     nodes: &[&Node],
+    graph: &DocpackGraph,
 ) -> Result<HashMap<String, SymbolDoc>, Box<dyn std::error::Error>> {
     let mut summaries = HashMap::new();
 
@@ -346,7 +365,14 @@ fn parse_symbol_json_response(
     for item in batch.symbols {
         let idx = item.symbol_index;
         if idx > 0 && idx <= nodes.len() {
-            let node_id = nodes[idx - 1].id.clone();
+            let node = nodes[idx - 1];
+            let node_id = node.id.clone();
+
+            // Get caller and callee references
+            let caller_references = get_caller_names(graph, &node_id);
+            let callee_references = get_callee_names(graph, &node_id);
+            let semantic_cluster = get_node_cluster(graph, &node_id);
+
             summaries.insert(
                 node_id.clone(),
                 SymbolDoc {
@@ -355,6 +381,9 @@ fn parse_symbol_json_response(
                     explanation: item.explanation,
                     complexity_notes: item.complexity_notes,
                     usage_hints: item.usage_hints,
+                    caller_references,
+                    callee_references,
+                    semantic_cluster,
                 },
             );
         }

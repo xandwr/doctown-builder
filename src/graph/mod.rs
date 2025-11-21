@@ -2,6 +2,7 @@
 // Phase 3: The Docpack Graph - semantic universe binding
 
 pub mod builder;
+pub mod resolver;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

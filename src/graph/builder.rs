@@ -1,6 +1,7 @@
 // graph/builder.rs
 // Graph builder - constructs the Docpack Graph from parsed AST data
 
+use super::resolver::ReferenceResolver;
 use super::{
     ConstantNode, DocpackGraph, Edge, EdgeKind, Field, FileNode, FunctionNode, Location,
     ModuleNode, Node, NodeId, NodeKind, Parameter, TypeKind, TypeNode, generate_node_id,
@@ -46,7 +47,7 @@ impl GraphBuilder {
             self.process_file(parsed_file);
         }
 
-        // Second pass: Resolve relationships and create edges
+        // Second pass: Resolve basic relationships and create initial edges
         self.resolve_edges();
 
         // Third pass: Populate file symbols
@@ -57,6 +58,10 @@ impl GraphBuilder {
 
         // Update metadata
         self.graph.update_metadata();
+
+        // Fifth pass: Use reference resolver for comprehensive edge creation
+        let resolver = ReferenceResolver::new(self.graph);
+        self.graph = resolver.resolve_references(parsed_files);
 
         self.graph
     }
@@ -527,22 +532,22 @@ impl GraphBuilder {
         // Resolve pending function calls
         for (caller_id, callee_name) in &self.pending_calls {
             if let Some(callee_id) = self.symbol_to_id.get(callee_name) {
-                self.graph.add_edge(Edge::new(
-                    caller_id.clone(),
-                    callee_id.clone(),
-                    EdgeKind::Calls,
-                ));
+                self.graph.add_edge(Edge {
+                    source: caller_id.clone(),
+                    target: callee_id.clone(),
+                    kind: EdgeKind::Calls,
+                });
             }
         }
 
         // Resolve pending type references
         for (user_id, type_name) in &self.pending_type_refs {
             if let Some(type_id) = self.symbol_to_id.get(type_name) {
-                self.graph.add_edge(Edge::new(
-                    user_id.clone(),
-                    type_id.clone(),
-                    EdgeKind::TypeReference,
-                ));
+                self.graph.add_edge(Edge {
+                    source: user_id.clone(),
+                    target: type_id.clone(),
+                    kind: EdgeKind::TypeReference,
+                });
             }
         }
 
