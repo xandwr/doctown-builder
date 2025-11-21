@@ -88,8 +88,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let analysis_result = pipeline::analyze::analyze_graph(&mut graph, &analysis_config)?;
 
     println!("   • Nodes analyzed: {}", analysis_result.nodes_analyzed);
-    println!("   • Complexity calculated: {}", analysis_result.complexity_calculated);
-    println!("   • Public API detected: {}", analysis_result.public_api_detected);
+    println!(
+        "   • Complexity calculated: {}",
+        analysis_result.complexity_calculated
+    );
+    println!(
+        "   • Public API detected: {}",
+        analysis_result.public_api_detected
+    );
 
     let stats = graph.stats();
     println!("\n📊 Graph Statistics:");

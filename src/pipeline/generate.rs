@@ -420,7 +420,11 @@ async fn generate_module_overviews(
         .map(|chunk| chunk.to_vec())
         .collect();
 
-    println!("      Processing {} modules in {} batches", modules.len(), batches.len());
+    println!(
+        "      Processing {} modules in {} batches",
+        modules.len(),
+        batches.len()
+    );
 
     // Process batches in parallel
     let batch_futures: Vec<_> = batches
@@ -482,11 +486,17 @@ async fn generate_module_batch(
             .iter()
             .filter(|n| n.metadata.is_public_api || n.is_public())
             .take(8)
-            .map(|n| format!("{} ({})", n.name(), match n.kind {
-                NodeKind::Function(_) => "fn",
-                NodeKind::Type(_) => "type",
-                _ => "other",
-            }))
+            .map(|n| {
+                format!(
+                    "{} ({})",
+                    n.name(),
+                    match n.kind {
+                        NodeKind::Function(_) => "fn",
+                        NodeKind::Type(_) => "type",
+                        _ => "other",
+                    }
+                )
+            })
             .collect();
 
         if !key_symbols.is_empty() {
@@ -508,7 +518,11 @@ async fn generate_module_batch(
         if !imports.is_empty() {
             prompt.push_str(&format!(
                 "Imports: {}\n",
-                imports.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                imports
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
@@ -518,7 +532,9 @@ async fn generate_module_batch(
     prompt.push_str("- responsibilities: Module responsibilities (1-2 sentences)\n");
     prompt.push_str("- interactions: How it interacts with other modules (1-2 sentences)\n\n");
     prompt.push_str("Return valid JSON:\n");
-    prompt.push_str(r#"{"modules": [{"module_index": 1, "responsibilities": "...", "interactions": "..."}]}"#);
+    prompt.push_str(
+        r#"{"modules": [{"module_index": 1, "responsibilities": "...", "interactions": "..."}]}"#,
+    );
 
     // Call OpenAI with JSON mode
     let response = call_openai_json(config, &prompt).await?;
@@ -553,7 +569,10 @@ fn parse_module_json_response(
 
     let batch: ModuleBatchResponse = serde_json::from_str(response).map_err(|e| {
         eprintln!("Failed to parse module JSON response. Error: {}", e);
-        eprintln!("Response (first 500 chars): {}", &response.chars().take(500).collect::<String>());
+        eprintln!(
+            "Response (first 500 chars): {}",
+            &response.chars().take(500).collect::<String>()
+        );
         format!("JSON parsing error: {}", e)
     })?;
 
@@ -567,14 +586,22 @@ fn parse_module_json_response(
                 let key_symbols: Vec<String> = graph
                     .nodes
                     .values()
-                    .filter(|n| n.location.file == *module_file && !matches!(n.kind, NodeKind::Module(_)))
+                    .filter(|n| {
+                        n.location.file == *module_file && !matches!(n.kind, NodeKind::Module(_))
+                    })
                     .filter(|n| n.metadata.is_public_api || n.is_public())
                     .take(5)
-                    .map(|n| format!("{} ({})", n.name(), match n.kind {
-                        NodeKind::Function(_) => "fn",
-                        NodeKind::Type(_) => "type",
-                        _ => "other",
-                    }))
+                    .map(|n| {
+                        format!(
+                            "{} ({})",
+                            n.name(),
+                            match n.kind {
+                                NodeKind::Function(_) => "fn",
+                                NodeKind::Type(_) => "type",
+                                _ => "other",
+                            }
+                        )
+                    })
                     .collect();
 
                 overviews.insert(

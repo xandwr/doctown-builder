@@ -4,8 +4,8 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use zip::write::{SimpleFileOptions, ZipWriter};
 use zip::CompressionMethod;
+use zip::write::{SimpleFileOptions, ZipWriter};
 
 /// Configuration for packaging
 #[derive(Debug, Clone)]
@@ -42,8 +42,7 @@ pub fn package_outputs(
     let file = File::create(docpack_path)?;
     let mut zip = ZipWriter::new(file);
 
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
     let mut files_included = 0;
     let mut total_size = 0;
@@ -68,10 +67,7 @@ pub fn package_outputs(
             total_size += content.len();
             files_included += 1;
         } else {
-            eprintln!(
-                "   ⚠️  Warning: Could not read {} (skipping)",
-                source_path
-            );
+            eprintln!("   ⚠️  Warning: Could not read {} (skipping)", source_path);
         }
     }
 

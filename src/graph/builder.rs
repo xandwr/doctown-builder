@@ -3,9 +3,9 @@
 
 use super::resolver::ReferenceResolver;
 use super::{
-    ConstantNode, DocpackGraph, Edge, EdgeKind, Field, FileNode, FunctionNode, Location,
-    MacroNode, MacroType, ModuleNode, Node, NodeId, NodeKind, Parameter, TraitNode, TypeKind,
-    TypeNode, generate_node_id,
+    ConstantNode, DocpackGraph, Edge, EdgeKind, Field, FileNode, FunctionNode, Location, MacroNode,
+    MacroType, ModuleNode, Node, NodeId, NodeKind, Parameter, TraitNode, TypeKind, TypeNode,
+    generate_node_id,
 };
 use crate::pipeline::parse::ParsedFile;
 use std::collections::HashMap;
@@ -339,7 +339,9 @@ impl GraphBuilder {
                     let mut method_cursor = child.walk();
                     for method_child in child.children(&mut method_cursor) {
                         if method_child.kind() == "function_signature_item" {
-                            if let Some(method_name) = self.find_child_text(&method_child, "identifier", source) {
+                            if let Some(method_name) =
+                                self.find_child_text(&method_child, "identifier", source)
+                            {
                                 methods.push(method_name);
                             }
                         }
@@ -391,8 +393,11 @@ impl GraphBuilder {
                     let mut method_cursor = child.walk();
                     for method_child in child.children(&mut method_cursor) {
                         if method_child.kind() == "function_item" {
-                            if let Some(method_name) = self.find_child_text(&method_child, "identifier", source) {
-                                let method_id = generate_node_id(&self.current_file, "method", &method_name);
+                            if let Some(method_name) =
+                                self.find_child_text(&method_child, "identifier", source)
+                            {
+                                let method_id =
+                                    generate_node_id(&self.current_file, "method", &method_name);
                                 methods.push(method_id);
                             }
                         }

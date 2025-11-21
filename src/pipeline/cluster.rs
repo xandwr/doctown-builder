@@ -38,6 +38,9 @@ pub struct ClusterConfig {
 
     /// Batch size for embedding generation
     pub batch_size: usize,
+
+    /// Number of parallel worker threads (each with its own ONNX session)
+    pub num_workers: usize,
 }
 
 impl Default for ClusterConfig {
@@ -48,6 +51,7 @@ impl Default for ClusterConfig {
             model_path: "models/minilm-l6/model.onnx".to_string(),
             tokenizer_path: "models/minilm-l6/tokenizer.json".to_string(),
             batch_size: 8,
+            num_workers: num_cpus::get().max(4), // Default to CPU count, minimum 4
         }
     }
 }
@@ -187,139 +191,260 @@ fn generate_embeddings(
     }
 }
 
-/// Generate embeddings using ONNX model with batching
+/// Generate embeddings using ONNX model with dedicated worker threads
 fn generate_jina_embeddings(
     contents: &[EmbeddableContent],
     config: &ClusterConfig,
 ) -> Result<Vec<Embedding>, Box<dyn std::error::Error>> {
+    use std::sync::{Arc, mpsc};
+    use std::thread;
     use std::time::Instant;
 
-    println!("      Loading ONNX model: {}", config.model_path);
+    println!("      Loading {} ONNX workers...", config.num_workers);
     let load_start = Instant::now();
 
-    // Load tokenizer
-    let tokenizer = Tokenizer::from_file(&config.tokenizer_path)
-        .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
+    // Load tokenizer once (shared Arc, read-only so safe)
+    let tokenizer = Arc::new(
+        Tokenizer::from_file(&config.tokenizer_path)
+            .map_err(|e| format!("Failed to load tokenizer: {}", e))?,
+    );
 
-    // Load ONNX model
-    let mut session = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(4)?
-        .commit_from_file(&config.model_path)?;
+    // Create work queue and result channels
+    let (work_tx, work_rx) =
+        mpsc::sync_channel::<Option<(usize, Vec<EmbeddableContent>)>>(config.num_workers * 2);
+    let work_rx = Arc::new(std::sync::Mutex::new(work_rx));
+    let (result_tx, result_rx) = mpsc::channel::<(usize, Vec<Embedding>)>();
+
+    // Spawn worker threads, each with its own ONNX session
+    let mut workers = Vec::new();
+    for worker_id in 0..config.num_workers {
+        let tokenizer = Arc::clone(&tokenizer);
+        let work_rx = Arc::clone(&work_rx);
+        let result_tx = result_tx.clone();
+        let model_path = config.model_path.clone();
+
+        let worker = thread::spawn(move || -> Result<(), String> {
+            // Each worker loads its own ONNX session
+            let mut session = Session::builder()
+                .map_err(|e| format!("Worker {} session builder error: {:?}", worker_id, e))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| format!("Worker {} optimization error: {:?}", worker_id, e))?
+                .with_intra_threads(2)
+                .map_err(|e| format!("Worker {} thread config error: {:?}", worker_id, e))?
+                .commit_from_file(&model_path)
+                .map_err(|e| format!("Worker {} model load error: {:?}", worker_id, e))?;
+
+            // Process work items from queue
+            loop {
+                let work_item = {
+                    let rx = work_rx.lock().unwrap();
+                    rx.recv()
+                        .map_err(|e| format!("Worker {} channel error: {:?}", worker_id, e))?
+                };
+
+                match work_item {
+                    None => break, // Shutdown signal
+                    Some((batch_idx, chunk)) => {
+                        let batch_start = Instant::now();
+
+                        // Tokenize batch
+                        let texts: Vec<&str> = chunk.iter().map(|c| c.text.as_str()).collect();
+                        let encodings =
+                            tokenizer.encode_batch(texts.clone(), true).map_err(|e| {
+                                format!("Worker {} tokenization failed: {:?}", worker_id, e)
+                            })?;
+
+                        // Prepare input tensors
+                        let max_len = encodings.iter().map(|e| e.len()).max().unwrap_or(0);
+                        let batch_size = encodings.len();
+
+                        let mut input_ids = vec![0i64; batch_size * max_len];
+                        let mut attention_mask = vec![0i64; batch_size * max_len];
+                        let mut token_type_ids = vec![0i64; batch_size * max_len];
+
+                        for (i, encoding) in encodings.iter().enumerate() {
+                            let ids = encoding.get_ids();
+                            let mask = encoding.get_attention_mask();
+                            let type_ids = encoding.get_type_ids();
+                            for (j, &id) in ids.iter().enumerate() {
+                                input_ids[i * max_len + j] = id as i64;
+                                attention_mask[i * max_len + j] = mask[j] as i64;
+                                token_type_ids[i * max_len + j] = type_ids[j] as i64;
+                            }
+                        }
+
+                        // Create ndarray inputs
+                        let input_ids_array =
+                            Array2::from_shape_vec((batch_size, max_len), input_ids).map_err(
+                                |e| format!("Worker {} shape error: {:?}", worker_id, e),
+                            )?;
+                        let attention_mask_array =
+                            Array2::from_shape_vec((batch_size, max_len), attention_mask).map_err(
+                                |e| format!("Worker {} shape error: {:?}", worker_id, e),
+                            )?;
+                        let token_type_ids_array =
+                            Array2::from_shape_vec((batch_size, max_len), token_type_ids).map_err(
+                                |e| format!("Worker {} shape error: {:?}", worker_id, e),
+                            )?;
+
+                        // Run inference
+                        let input_ids_value = Value::from_array(input_ids_array).map_err(|e| {
+                            format!("Worker {} value creation error: {:?}", worker_id, e)
+                        })?;
+                        let attention_mask_value = Value::from_array(attention_mask_array)
+                            .map_err(|e| {
+                                format!("Worker {} value creation error: {:?}", worker_id, e)
+                            })?;
+                        let token_type_ids_value = Value::from_array(token_type_ids_array)
+                            .map_err(|e| {
+                                format!("Worker {} value creation error: {:?}", worker_id, e)
+                            })?;
+
+                        let outputs = session
+                            .run(ort::inputs![
+                                "input_ids" => &input_ids_value,
+                                "attention_mask" => &attention_mask_value,
+                                "token_type_ids" => &token_type_ids_value
+                            ])
+                            .map_err(|e| {
+                                format!("Worker {} ONNX inference error: {:?}", worker_id, e)
+                            })?;
+
+                        // Extract embeddings (mean pooling)
+                        let (output_shape, output_data) =
+                            outputs[0].try_extract_tensor::<f32>().map_err(|e| {
+                                format!("Worker {} tensor extraction error: {:?}", worker_id, e)
+                            })?;
+                        let embedding_dim = output_shape[2];
+
+                        // Get mask arrays for mean pooling
+                        let (_, attention_mask_data) = attention_mask_value
+                            .try_extract_tensor::<i64>()
+                            .map_err(|e| {
+                                format!("Worker {} mask extraction error: {:?}", worker_id, e)
+                            })?;
+
+                        let mut batch_embeddings = Vec::new();
+
+                        for (i, content) in chunk.iter().enumerate() {
+                            // Mean pooling over sequence length
+                            let mut pooled = vec![0.0f32; embedding_dim as usize];
+                            let mut count = 0;
+
+                            for j in 0..max_len {
+                                let mask_idx = i * max_len + j;
+                                if attention_mask_data[mask_idx] == 1 {
+                                    for k in 0..embedding_dim {
+                                        let tensor_idx = i * max_len * (embedding_dim as usize)
+                                            + j * (embedding_dim as usize)
+                                            + (k as usize);
+                                        pooled[k as usize] += output_data[tensor_idx as usize];
+                                    }
+                                    count += 1;
+                                }
+                            }
+
+                            if count > 0 {
+                                for val in &mut pooled {
+                                    *val /= count as f32;
+                                }
+                            }
+
+                            // Normalize
+                            let magnitude: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
+                            if magnitude > 0.0 {
+                                for val in &mut pooled {
+                                    *val /= magnitude;
+                                }
+                            }
+
+                            batch_embeddings.push(Embedding {
+                                node_id: content.node_id.clone(),
+                                vector: pooled,
+                                model: "minilm-l6-v2".to_string(),
+                            });
+                        }
+
+                        println!(
+                            "           ✓ Worker {} batch {}: {} items in {:.2}s ({:.0} items/sec)",
+                            worker_id,
+                            batch_idx + 1,
+                            texts.len(),
+                            batch_start.elapsed().as_secs_f32(),
+                            texts.len() as f32 / batch_start.elapsed().as_secs_f32()
+                        );
+
+                        // Send results back
+                        result_tx.send((batch_idx, batch_embeddings)).map_err(|e| {
+                            format!("Worker {} result send error: {:?}", worker_id, e)
+                        })?;
+                    }
+                }
+            }
+
+            Ok(())
+        });
+
+        workers.push(worker);
+    }
 
     println!(
-        "      ✓ Model loaded in {:.2}s",
+        "      ✓ Loaded {} workers in {:.2}s",
+        config.num_workers,
         load_start.elapsed().as_secs_f32()
     );
+
+    // Send work items to queue
+    let total_batches = (contents.len() + config.batch_size - 1) / config.batch_size;
     println!(
-        "      Processing {} items in batches of {}",
+        "      Processing {} items in {} batches of {} across {} workers",
         contents.len(),
-        config.batch_size
+        total_batches,
+        config.batch_size,
+        config.num_workers
     );
 
-    let mut all_embeddings = Vec::new();
+    let total_start = Instant::now();
 
+    // Dispatch all work
     for (batch_idx, chunk) in contents.chunks(config.batch_size).enumerate() {
-        let batch_start = Instant::now();
-        let batch_num = batch_idx + 1;
-        let total_batches = (contents.len() + config.batch_size - 1) / config.batch_size;
-
-        println!("         Batch {}/{}", batch_num, total_batches);
-
-        // Tokenize batch
-        let texts: Vec<&str> = chunk.iter().map(|c| c.text.as_str()).collect();
-        let encodings = tokenizer
-            .encode_batch(texts.clone(), true)
-            .map_err(|e| format!("Tokenization failed: {}", e))?;
-
-        // Prepare input tensors
-        let max_len = encodings.iter().map(|e| e.len()).max().unwrap_or(0);
-        let batch_size = encodings.len();
-
-        let mut input_ids = vec![0i64; batch_size * max_len];
-        let mut attention_mask = vec![0i64; batch_size * max_len];
-        let mut token_type_ids = vec![0i64; batch_size * max_len];
-
-        for (i, encoding) in encodings.iter().enumerate() {
-            let ids = encoding.get_ids();
-            let mask = encoding.get_attention_mask();
-            let type_ids = encoding.get_type_ids();
-            for (j, &id) in ids.iter().enumerate() {
-                input_ids[i * max_len + j] = id as i64;
-                attention_mask[i * max_len + j] = mask[j] as i64;
-                token_type_ids[i * max_len + j] = type_ids[j] as i64;
-            }
-        }
-
-        // Create ndarray inputs
-        let input_ids_array = Array2::from_shape_vec((batch_size, max_len), input_ids)?;
-        let attention_mask_array = Array2::from_shape_vec((batch_size, max_len), attention_mask)?;
-        let token_type_ids_array = Array2::from_shape_vec((batch_size, max_len), token_type_ids)?;
-
-        // Run inference
-        let input_ids_value = Value::from_array(input_ids_array)?;
-        let attention_mask_value = Value::from_array(attention_mask_array)?;
-        let token_type_ids_value = Value::from_array(token_type_ids_array)?;
-
-        let outputs = session.run(ort::inputs![
-            "input_ids" => &input_ids_value,
-            "attention_mask" => &attention_mask_value,
-            "token_type_ids" => &token_type_ids_value
-        ])?;
-
-        // Extract embeddings (mean pooling)
-        let (output_shape, output_data) = outputs[0].try_extract_tensor::<f32>()?;
-        let embedding_dim = output_shape[2];
-
-        // Get mask arrays for mean pooling
-        let (_, attention_mask_data) = attention_mask_value.try_extract_tensor::<i64>()?;
-
-        for (i, content) in chunk.iter().enumerate() {
-            // Mean pooling over sequence length
-            let mut pooled = vec![0.0f32; embedding_dim as usize];
-            let mut count = 0;
-
-            for j in 0..max_len {
-                let mask_idx = i * max_len + j;
-                if attention_mask_data[mask_idx] == 1 {
-                    for k in 0..embedding_dim {
-                        let tensor_idx = i * max_len * (embedding_dim as usize)
-                            + j * (embedding_dim as usize)
-                            + (k as usize);
-                        pooled[k as usize] += output_data[tensor_idx as usize];
-                    }
-                    count += 1;
-                }
-            }
-
-            if count > 0 {
-                for val in &mut pooled {
-                    *val /= count as f32;
-                }
-            }
-
-            // Normalize
-            let magnitude: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
-            if magnitude > 0.0 {
-                for val in &mut pooled {
-                    *val /= magnitude;
-                }
-            }
-
-            all_embeddings.push(Embedding {
-                node_id: content.node_id.clone(),
-                vector: pooled,
-                model: "minilm-l6-v2".to_string(),
-            });
-        }
-
-        println!(
-            "           ✓ Embedded {} items in {:.2}s ({:.0} items/sec)",
-            texts.len(),
-            batch_start.elapsed().as_secs_f32(),
-            texts.len() as f32 / batch_start.elapsed().as_secs_f32()
-        );
+        work_tx
+            .send(Some((batch_idx, chunk.to_vec())))
+            .map_err(|e| format!("Failed to send work: {:?}", e))?;
     }
+
+    // Send shutdown signals
+    for _ in 0..config.num_workers {
+        work_tx.send(None).ok();
+    }
+    drop(work_tx); // Close the channel
+
+    // Collect results
+    let mut results = vec![Vec::new(); total_batches];
+    for _ in 0..total_batches {
+        let (batch_idx, embeddings) = result_rx
+            .recv()
+            .map_err(|e| format!("Failed to receive result: {:?}", e))?;
+        results[batch_idx] = embeddings;
+    }
+
+    // Wait for all workers to finish
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|e| format!("Worker thread panicked: {:?}", e))?
+            .map_err(|e| format!("Worker error: {}", e))?;
+    }
+
+    // Flatten results
+    let all_embeddings: Vec<Embedding> = results.into_iter().flatten().collect();
+
+    println!(
+        "      ✓ Generated {} embeddings in {:.2}s ({:.0} items/sec overall)",
+        all_embeddings.len(),
+        total_start.elapsed().as_secs_f32(),
+        all_embeddings.len() as f32 / total_start.elapsed().as_secs_f32()
+    );
 
     Ok(all_embeddings)
 }

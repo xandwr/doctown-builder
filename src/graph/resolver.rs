@@ -80,6 +80,7 @@ pub struct PendingReference {
 }
 
 /// Type inference information for variable bindings
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypeInferenceInfo {
     pub binding_name: String,
@@ -89,6 +90,7 @@ pub struct TypeInferenceInfo {
 }
 
 /// Trait implementation information
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TraitImplementationInfo {
     pub type_name: String,
@@ -97,6 +99,7 @@ pub struct TraitImplementationInfo {
 }
 
 /// Method call information for dispatch resolution
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MethodCallInfo {
     pub caller_id: Option<NodeId>,
@@ -106,6 +109,7 @@ pub struct MethodCallInfo {
 }
 
 /// Macro invocation information
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MacroInvocationInfo {
     pub caller_id: Option<NodeId>,
@@ -161,10 +165,13 @@ impl ReferenceResolver {
                         .insert(type_node.name.clone(), id.clone());
                 }
                 NodeKind::Trait(trait_node) => {
-                    self.symbol_registry.insert(trait_node.name.clone(), id.clone());
-                    self.trait_registry.insert(trait_node.name.clone(), id.clone());
+                    self.symbol_registry
+                        .insert(trait_node.name.clone(), id.clone());
+                    self.trait_registry
+                        .insert(trait_node.name.clone(), id.clone());
                     // Store trait methods for later resolution
-                    self.trait_methods.insert(trait_node.name.clone(), trait_node.methods.clone());
+                    self.trait_methods
+                        .insert(trait_node.name.clone(), trait_node.methods.clone());
                 }
                 NodeKind::Module(module) => {
                     self.module_registry.insert(module.path.clone(), id.clone());
@@ -181,8 +188,10 @@ impl ReferenceResolver {
                         .insert(constant.name.clone(), id.clone());
                 }
                 NodeKind::Macro(macro_node) => {
-                    self.symbol_registry.insert(macro_node.name.clone(), id.clone());
-                    self.macro_registry.insert(macro_node.name.clone(), id.clone());
+                    self.symbol_registry
+                        .insert(macro_node.name.clone(), id.clone());
+                    self.macro_registry
+                        .insert(macro_node.name.clone(), id.clone());
                 }
                 _ => {}
             }
@@ -205,10 +214,22 @@ impl ReferenceResolver {
             self.pending_type_refs.len()
         );
         println!("      • Found {} return types", self.pending_returns.len());
-        println!("      • Found {} type inferences", self.pending_type_inference.len());
-        println!("      • Found {} trait implementations", self.pending_trait_impls.len());
-        println!("      • Found {} method calls", self.pending_method_calls.len());
-        println!("      • Found {} macro invocations", self.pending_macro_calls.len());
+        println!(
+            "      • Found {} type inferences",
+            self.pending_type_inference.len()
+        );
+        println!(
+            "      • Found {} trait implementations",
+            self.pending_trait_impls.len()
+        );
+        println!(
+            "      • Found {} method calls",
+            self.pending_method_calls.len()
+        );
+        println!(
+            "      • Found {} macro invocations",
+            self.pending_macro_calls.len()
+        );
 
         // Second pass: Resolve all pending references
         self.resolve_function_calls();
@@ -428,7 +449,12 @@ impl ReferenceResolver {
     }
 
     /// Extract type inference from let bindings
-    fn extract_rust_type_inference(&mut self, node: &TSNode, source: &[u8], context: &ResolutionContext) {
+    fn extract_rust_type_inference(
+        &mut self,
+        node: &TSNode,
+        source: &[u8],
+        context: &ResolutionContext,
+    ) {
         // Pattern: let binding_name: Type = value  OR  let binding_name = function_call()
         let mut binding_name = None;
         let mut explicit_type = None;
@@ -474,7 +500,12 @@ impl ReferenceResolver {
     }
 
     /// Extract trait implementation from impl blocks
-    fn extract_rust_impl_block(&mut self, node: &TSNode, source: &[u8], context: &ResolutionContext) {
+    fn extract_rust_impl_block(
+        &mut self,
+        node: &TSNode,
+        source: &[u8],
+        context: &ResolutionContext,
+    ) {
         // Pattern: impl TraitName for TypeName
         let mut type_name = None;
         let mut trait_name = None;
@@ -510,7 +541,12 @@ impl ReferenceResolver {
     }
 
     /// Extract method call for dispatch resolution
-    fn extract_rust_method_call(&mut self, node: &TSNode, source: &[u8], context: &ResolutionContext) {
+    fn extract_rust_method_call(
+        &mut self,
+        node: &TSNode,
+        source: &[u8],
+        context: &ResolutionContext,
+    ) {
         // Pattern: receiver.method_name()
         let mut receiver_type = None;
         let mut method_name = None;
@@ -535,7 +571,12 @@ impl ReferenceResolver {
     }
 
     /// Extract macro invocation
-    fn extract_rust_macro_call(&mut self, node: &TSNode, source: &[u8], context: &ResolutionContext) {
+    fn extract_rust_macro_call(
+        &mut self,
+        node: &TSNode,
+        source: &[u8],
+        context: &ResolutionContext,
+    ) {
         // Pattern: macro_name!(args)
         if let Some(macro_node) = node.child_by_field_name("macro") {
             if let Some(mut macro_name) = self.get_node_text(&macro_node, source) {
@@ -932,9 +973,11 @@ impl ReferenceResolver {
                     if let Some(node) = self.graph.nodes.get(func_id) {
                         if let NodeKind::Function(func_node) = &node.kind {
                             if let Some(ref return_type) = func_node.return_type {
-                                let base_type = return_type.split('<').next().unwrap_or(return_type);
+                                let base_type =
+                                    return_type.split('<').next().unwrap_or(return_type);
                                 if let Some(type_id) = self.type_registry.get(base_type) {
-                                    if let Some(ref caller_id) = inference.context.current_function {
+                                    if let Some(ref caller_id) = inference.context.current_function
+                                    {
                                         self.graph.add_edge(Edge::new(
                                             caller_id.clone(),
                                             type_id.clone(),

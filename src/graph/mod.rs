@@ -195,10 +195,10 @@ pub struct MacroNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum MacroType {
-    Declarative,    // macro_rules!
-    Procedural,     // #[proc_macro]
-    Derive,         // #[proc_macro_derive]
-    Attribute,      // #[proc_macro_attribute]
+    Declarative, // macro_rules!
+    Procedural,  // #[proc_macro]
+    Derive,      // #[proc_macro_derive]
+    Attribute,   // #[proc_macro_attribute]
 }
 
 /// Function parameter
