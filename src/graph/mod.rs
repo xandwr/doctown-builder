@@ -53,6 +53,7 @@ pub enum NodeKind {
     File(FileNode),
     Cluster(ClusterNode),
     Package(PackageNode),
+    Macro(MacroNode),
 }
 
 /// Function/method node
@@ -183,6 +184,23 @@ pub struct PackageNode {
     pub modules: Vec<NodeId>,
 }
 
+/// Macro node (declarative and procedural)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct MacroNode {
+    pub name: String,
+    pub is_public: bool,
+    pub macro_type: MacroType,
+    pub pattern: Option<String>, // For declarative macros
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum MacroType {
+    Declarative,    // macro_rules!
+    Procedural,     // #[proc_macro]
+    Derive,         // #[proc_macro_derive]
+    Attribute,      // #[proc_macro_attribute]
+}
+
 /// Function parameter
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Parameter {
@@ -259,6 +277,21 @@ pub enum EdgeKind {
 
     /// Symbol A is defined in file B
     DefinedIn,
+
+    /// Variable/binding has inferred type (e.g., let x = foo() -> x has type Foo)
+    InferredType,
+
+    /// Method call resolved to specific trait implementation
+    TraitMethodCall,
+
+    /// Method call dispatched to specific implementation
+    MethodDispatch,
+
+    /// Macro invocation expands to code
+    MacroExpansion,
+
+    /// Trait provides method (trait -> method definition)
+    TraitProvides,
 }
 
 impl DocpackGraph {
@@ -376,6 +409,7 @@ impl Node {
             NodeKind::File(f) => f.path.clone(),
             NodeKind::Cluster(c) => c.name.clone(),
             NodeKind::Package(p) => p.name.clone(),
+            NodeKind::Macro(m) => m.name.clone(),
         }
     }
 
@@ -387,6 +421,7 @@ impl Node {
             NodeKind::Trait(t) => t.is_public,
             NodeKind::Module(m) => m.is_public,
             NodeKind::Constant(c) => c.is_public,
+            NodeKind::Macro(m) => m.is_public,
             NodeKind::File(_) | NodeKind::Cluster(_) | NodeKind::Package(_) => true,
         }
     }

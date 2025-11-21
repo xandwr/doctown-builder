@@ -177,6 +177,10 @@ fn detect_public_api(node: &crate::graph::Node, _graph: &DocpackGraph) -> bool {
             // Public constants are API
             c.is_public
         }
+        NodeKind::Macro(m) => {
+            // Public macros are part of the API
+            m.is_public
+        }
         NodeKind::File(_) | NodeKind::Cluster(_) | NodeKind::Package(_) => {
             // These are not directly part of API
             false

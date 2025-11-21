@@ -42,11 +42,32 @@ pub struct ReferenceResolver {
     /// External package/library -> NodeId mapping
     package_registry: HashMap<String, NodeId>,
 
+    /// Trait name -> NodeId mapping
+    trait_registry: HashMap<String, NodeId>,
+
+    /// Macro name -> NodeId mapping
+    macro_registry: HashMap<String, NodeId>,
+
     /// Track pending references to resolve in second pass
     pending_calls: Vec<PendingReference>,
     pending_imports: Vec<PendingReference>,
     pending_type_refs: Vec<PendingReference>,
     pending_returns: Vec<(NodeId, String)>, // function_id, return_type
+
+    /// Track type inference: variable binding -> inferred type
+    pending_type_inference: Vec<TypeInferenceInfo>,
+
+    /// Track trait implementations: type -> trait
+    pending_trait_impls: Vec<TraitImplementationInfo>,
+
+    /// Track method calls for dispatch resolution
+    pending_method_calls: Vec<MethodCallInfo>,
+
+    /// Track macro invocations
+    pending_macro_calls: Vec<MacroInvocationInfo>,
+
+    /// Track trait method definitions
+    trait_methods: HashMap<String, Vec<String>>, // trait_name -> method_names
 }
 
 /// A reference that needs to be resolved
@@ -55,6 +76,40 @@ pub struct PendingReference {
     pub source_id: NodeId,
     pub target_name: String,
     #[allow(dead_code)] // context currently carried for potential future use
+    pub context: ResolutionContext,
+}
+
+/// Type inference information for variable bindings
+#[derive(Debug, Clone)]
+pub struct TypeInferenceInfo {
+    pub binding_name: String,
+    pub inferred_from_call: Option<String>, // function name that returns the type
+    pub explicit_type: Option<String>,      // explicit type annotation if present
+    pub context: ResolutionContext,
+}
+
+/// Trait implementation information
+#[derive(Debug, Clone)]
+pub struct TraitImplementationInfo {
+    pub type_name: String,
+    pub trait_name: String,
+    pub context: ResolutionContext,
+}
+
+/// Method call information for dispatch resolution
+#[derive(Debug, Clone)]
+pub struct MethodCallInfo {
+    pub caller_id: Option<NodeId>,
+    pub receiver_type: Option<String>, // Type of the object receiving the method call
+    pub method_name: String,
+    pub context: ResolutionContext,
+}
+
+/// Macro invocation information
+#[derive(Debug, Clone)]
+pub struct MacroInvocationInfo {
+    pub caller_id: Option<NodeId>,
+    pub macro_name: String,
     pub context: ResolutionContext,
 }
 
@@ -68,10 +123,17 @@ impl ReferenceResolver {
             type_registry: HashMap::new(),
             file_registry: HashMap::new(),
             package_registry: HashMap::new(),
+            trait_registry: HashMap::new(),
+            macro_registry: HashMap::new(),
             pending_calls: Vec::new(),
             pending_imports: Vec::new(),
             pending_type_refs: Vec::new(),
             pending_returns: Vec::new(),
+            pending_type_inference: Vec::new(),
+            pending_trait_impls: Vec::new(),
+            pending_method_calls: Vec::new(),
+            pending_macro_calls: Vec::new(),
+            trait_methods: HashMap::new(),
         };
 
         // Build registries from existing graph nodes
@@ -98,6 +160,12 @@ impl ReferenceResolver {
                     self.type_registry
                         .insert(type_node.name.clone(), id.clone());
                 }
+                NodeKind::Trait(trait_node) => {
+                    self.symbol_registry.insert(trait_node.name.clone(), id.clone());
+                    self.trait_registry.insert(trait_node.name.clone(), id.clone());
+                    // Store trait methods for later resolution
+                    self.trait_methods.insert(trait_node.name.clone(), trait_node.methods.clone());
+                }
                 NodeKind::Module(module) => {
                     self.module_registry.insert(module.path.clone(), id.clone());
                     self.symbol_registry.insert(module.name.clone(), id.clone());
@@ -111,6 +179,10 @@ impl ReferenceResolver {
                 NodeKind::Constant(constant) => {
                     self.symbol_registry
                         .insert(constant.name.clone(), id.clone());
+                }
+                NodeKind::Macro(macro_node) => {
+                    self.symbol_registry.insert(macro_node.name.clone(), id.clone());
+                    self.macro_registry.insert(macro_node.name.clone(), id.clone());
                 }
                 _ => {}
             }
@@ -133,6 +205,10 @@ impl ReferenceResolver {
             self.pending_type_refs.len()
         );
         println!("      • Found {} return types", self.pending_returns.len());
+        println!("      • Found {} type inferences", self.pending_type_inference.len());
+        println!("      • Found {} trait implementations", self.pending_trait_impls.len());
+        println!("      • Found {} method calls", self.pending_method_calls.len());
+        println!("      • Found {} macro invocations", self.pending_macro_calls.len());
 
         // Second pass: Resolve all pending references
         self.resolve_function_calls();
@@ -141,6 +217,12 @@ impl ReferenceResolver {
         self.resolve_return_type_edges();
         self.resolve_file_symbol_edges();
         self.resolve_external_library_edges();
+
+        // Third pass: Enhanced resolution
+        self.resolve_type_inference();
+        self.resolve_trait_implementations();
+        self.resolve_method_dispatch();
+        self.resolve_macro_expansions();
 
         println!("      ✓ Created {} edges", self.graph.edges.len());
 
@@ -198,8 +280,9 @@ impl ReferenceResolver {
                 }
             }
 
-            // Track impl block scope (for methods)
+            // Track impl block scope (for methods and trait implementations)
             "impl_item" => {
+                self.extract_rust_impl_block(node, source, context);
                 if let Some(type_name) = self.find_child_text(node, "type_identifier", source) {
                     if let Some(type_id) = self.type_registry.get(&type_name) {
                         context.current_type = Some(type_id.clone());
@@ -212,6 +295,16 @@ impl ReferenceResolver {
                 self.extract_rust_call(node, source, context);
             }
 
+            // Method call (field_expression with call)
+            "field_expression" => {
+                // Check if parent is a call_expression to detect method calls
+                if let Some(parent) = node.parent() {
+                    if parent.kind() == "call_expression" {
+                        self.extract_rust_method_call(node, source, context);
+                    }
+                }
+            }
+
             // Use statement (import)
             "use_declaration" => {
                 self.extract_rust_import(node, source, context);
@@ -220,6 +313,16 @@ impl ReferenceResolver {
             // Type annotation
             "type_identifier" | "generic_type" => {
                 self.extract_rust_type_ref(node, source, context);
+            }
+
+            // Let binding with type inference
+            "let_declaration" => {
+                self.extract_rust_type_inference(node, source, context);
+            }
+
+            // Macro invocation
+            "macro_invocation" => {
+                self.extract_rust_macro_call(node, source, context);
             }
 
             _ => {}
@@ -320,6 +423,132 @@ impl ReferenceResolver {
                         context: context.clone(),
                     });
                 }
+            }
+        }
+    }
+
+    /// Extract type inference from let bindings
+    fn extract_rust_type_inference(&mut self, node: &TSNode, source: &[u8], context: &ResolutionContext) {
+        // Pattern: let binding_name: Type = value  OR  let binding_name = function_call()
+        let mut binding_name = None;
+        let mut explicit_type = None;
+        let mut inferred_from_call = None;
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" => {
+                    if binding_name.is_none() {
+                        binding_name = self.get_node_text(&child, source);
+                    }
+                }
+                "type_identifier" | "generic_type" => {
+                    explicit_type = self.get_node_text(&child, source);
+                }
+                "call_expression" => {
+                    // Try to extract the function being called
+                    if let Some(func_node) = child.child_by_field_name("function") {
+                        if let Some(func_name) = self.get_node_text(&func_node, source) {
+                            let simple_name = func_name
+                                .split("::")
+                                .last()
+                                .or_else(|| func_name.split('.').last())
+                                .unwrap_or(&func_name)
+                                .to_string();
+                            inferred_from_call = Some(simple_name);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(name) = binding_name {
+            self.pending_type_inference.push(TypeInferenceInfo {
+                binding_name: name,
+                inferred_from_call,
+                explicit_type,
+                context: context.clone(),
+            });
+        }
+    }
+
+    /// Extract trait implementation from impl blocks
+    fn extract_rust_impl_block(&mut self, node: &TSNode, source: &[u8], context: &ResolutionContext) {
+        // Pattern: impl TraitName for TypeName
+        let mut type_name = None;
+        let mut trait_name = None;
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "type_identifier" => {
+                    if type_name.is_none() {
+                        type_name = self.get_node_text(&child, source);
+                    } else if trait_name.is_none() {
+                        // The second type_identifier is the trait in "impl Trait for Type"
+                        trait_name = self.get_node_text(&child, source);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Check if this is "impl Trait for Type" pattern
+        if let Some(text) = self.get_node_text(node, source) {
+            if text.contains(" for ") {
+                // Parse "impl Trait for Type" - swap them
+                if let (Some(t), Some(tr)) = (type_name.as_ref(), trait_name.as_ref()) {
+                    self.pending_trait_impls.push(TraitImplementationInfo {
+                        type_name: t.clone(),
+                        trait_name: tr.clone(),
+                        context: context.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Extract method call for dispatch resolution
+    fn extract_rust_method_call(&mut self, node: &TSNode, source: &[u8], context: &ResolutionContext) {
+        // Pattern: receiver.method_name()
+        let mut receiver_type = None;
+        let mut method_name = None;
+
+        if let Some(value_node) = node.child_by_field_name("value") {
+            // Try to get the type of the receiver (simplified - could be enhanced)
+            receiver_type = self.get_node_text(&value_node, source);
+        }
+
+        if let Some(field_node) = node.child_by_field_name("field") {
+            method_name = self.get_node_text(&field_node, source);
+        }
+
+        if let Some(method) = method_name {
+            self.pending_method_calls.push(MethodCallInfo {
+                caller_id: context.current_function.clone(),
+                receiver_type,
+                method_name: method,
+                context: context.clone(),
+            });
+        }
+    }
+
+    /// Extract macro invocation
+    fn extract_rust_macro_call(&mut self, node: &TSNode, source: &[u8], context: &ResolutionContext) {
+        // Pattern: macro_name!(args)
+        if let Some(macro_node) = node.child_by_field_name("macro") {
+            if let Some(mut macro_name) = self.get_node_text(&macro_node, source) {
+                // Remove trailing ! if present
+                if macro_name.ends_with('!') {
+                    macro_name = macro_name[..macro_name.len() - 1].to_string();
+                }
+
+                self.pending_macro_calls.push(MacroInvocationInfo {
+                    caller_id: context.current_function.clone(),
+                    macro_name,
+                    context: context.clone(),
+                });
             }
         }
     }
@@ -672,6 +901,188 @@ impl ReferenceResolver {
         println!(
             "      • Tracked {} external packages",
             external_package_count
+        );
+    }
+
+    /// Resolve type inference edges
+    fn resolve_type_inference(&mut self) {
+        let mut resolved = 0;
+
+        for inference in &self.pending_type_inference {
+            // If explicit type annotation exists, create edge to that type
+            if let Some(ref type_name) = inference.explicit_type {
+                let base_type = type_name.split('<').next().unwrap_or(type_name);
+                if let Some(type_id) = self.type_registry.get(base_type) {
+                    // We don't have a node for the binding itself, but we can create
+                    // an edge from the current function to the type (if in function scope)
+                    if let Some(ref caller_id) = inference.context.current_function {
+                        self.graph.add_edge(Edge::new(
+                            caller_id.clone(),
+                            type_id.clone(),
+                            EdgeKind::InferredType,
+                        ));
+                        resolved += 1;
+                    }
+                }
+            }
+            // If inferred from function call, look up the function's return type
+            else if let Some(ref func_name) = inference.inferred_from_call {
+                if let Some(func_id) = self.symbol_registry.get(func_name) {
+                    // Get the function's return type
+                    if let Some(node) = self.graph.nodes.get(func_id) {
+                        if let NodeKind::Function(func_node) = &node.kind {
+                            if let Some(ref return_type) = func_node.return_type {
+                                let base_type = return_type.split('<').next().unwrap_or(return_type);
+                                if let Some(type_id) = self.type_registry.get(base_type) {
+                                    if let Some(ref caller_id) = inference.context.current_function {
+                                        self.graph.add_edge(Edge::new(
+                                            caller_id.clone(),
+                                            type_id.clone(),
+                                            EdgeKind::InferredType,
+                                        ));
+                                        resolved += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        println!(
+            "      • Resolved {} / {} type inferences",
+            resolved,
+            self.pending_type_inference.len()
+        );
+    }
+
+    /// Resolve trait implementation edges
+    fn resolve_trait_implementations(&mut self) {
+        let mut resolved = 0;
+
+        for trait_impl in &self.pending_trait_impls {
+            // Find the type and trait nodes
+            if let (Some(type_id), Some(trait_id)) = (
+                self.type_registry.get(&trait_impl.type_name),
+                self.trait_registry.get(&trait_impl.trait_name),
+            ) {
+                // Create edge: Type implements Trait
+                self.graph.add_edge(Edge::new(
+                    type_id.clone(),
+                    trait_id.clone(),
+                    EdgeKind::TraitImplementation,
+                ));
+                resolved += 1;
+            }
+        }
+
+        println!(
+            "      • Resolved {} / {} trait implementations",
+            resolved,
+            self.pending_trait_impls.len()
+        );
+    }
+
+    /// Resolve method dispatch edges
+    fn resolve_method_dispatch(&mut self) {
+        let mut resolved = 0;
+
+        for method_call in &self.pending_method_calls {
+            // Try to find the method in our symbol registry
+            if let Some(method_id) = self.symbol_registry.get(&method_call.method_name) {
+                if let Some(ref caller_id) = method_call.caller_id {
+                    // Create a MethodDispatch edge from caller to the resolved method
+                    self.graph.add_edge(Edge::new(
+                        caller_id.clone(),
+                        method_id.clone(),
+                        EdgeKind::MethodDispatch,
+                    ));
+                    resolved += 1;
+                }
+            }
+
+            // Advanced: Try to resolve based on receiver type and trait methods
+            if let Some(ref receiver_type) = method_call.receiver_type {
+                // Check if this is a known type
+                if let Some(type_id) = self.type_registry.get(receiver_type) {
+                    // Look through trait implementations to find matching methods
+                    for (trait_name, methods) in &self.trait_methods {
+                        if methods.contains(&method_call.method_name) {
+                            // Check if this type implements this trait
+                            if let Some(trait_id) = self.trait_registry.get(trait_name) {
+                                // Create a TraitMethodCall edge
+                                if let Some(ref caller_id) = method_call.caller_id {
+                                    self.graph.add_edge(Edge::new(
+                                        caller_id.clone(),
+                                        trait_id.clone(),
+                                        EdgeKind::TraitMethodCall,
+                                    ));
+                                    resolved += 1;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Also check type's own methods
+                    if let Some(node) = self.graph.nodes.get(type_id) {
+                        if let NodeKind::Type(type_node) = &node.kind {
+                            for method_id in &type_node.methods {
+                                if let Some(method_node) = self.graph.nodes.get(method_id) {
+                                    if let NodeKind::Function(func) = &method_node.kind {
+                                        if func.name == method_call.method_name {
+                                            if let Some(ref caller_id) = method_call.caller_id {
+                                                self.graph.add_edge(Edge::new(
+                                                    caller_id.clone(),
+                                                    method_id.clone(),
+                                                    EdgeKind::MethodDispatch,
+                                                ));
+                                                resolved += 1;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        println!(
+            "      • Resolved {} / {} method dispatches",
+            resolved,
+            self.pending_method_calls.len()
+        );
+    }
+
+    /// Resolve macro expansion edges
+    fn resolve_macro_expansions(&mut self) {
+        let mut resolved = 0;
+
+        for macro_call in &self.pending_macro_calls {
+            // Look up the macro in the registry
+            if let Some(macro_id) = self.macro_registry.get(&macro_call.macro_name) {
+                if let Some(ref caller_id) = macro_call.caller_id {
+                    // Create MacroExpansion edge from caller to macro
+                    self.graph.add_edge(Edge::new(
+                        caller_id.clone(),
+                        macro_id.clone(),
+                        EdgeKind::MacroExpansion,
+                    ));
+                    resolved += 1;
+                }
+            }
+            // If macro not found, it might be a standard library macro or external
+            // We could optionally create a node for it
+        }
+
+        println!(
+            "      • Resolved {} / {} macro expansions",
+            resolved,
+            self.pending_macro_calls.len()
         );
     }
 

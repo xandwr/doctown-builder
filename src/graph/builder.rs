@@ -4,7 +4,8 @@
 use super::resolver::ReferenceResolver;
 use super::{
     ConstantNode, DocpackGraph, Edge, EdgeKind, Field, FileNode, FunctionNode, Location,
-    ModuleNode, Node, NodeId, NodeKind, Parameter, TypeKind, TypeNode, generate_node_id,
+    MacroNode, MacroType, ModuleNode, Node, NodeId, NodeKind, Parameter, TraitNode, TypeKind,
+    TypeNode, generate_node_id,
 };
 use crate::pipeline::parse::ParsedFile;
 use std::collections::HashMap;
@@ -131,6 +132,9 @@ impl GraphBuilder {
             }
             "impl_item" => {
                 self.extract_rust_impl(node, source);
+            }
+            "macro_definition" => {
+                self.extract_rust_macro(node, source);
             }
             "const_item" | "static_item" => {
                 self.extract_rust_constant(node, source);
@@ -314,14 +318,147 @@ impl GraphBuilder {
         }
     }
 
-    fn extract_rust_trait(&mut self, _node: &TSNode, _source: &[u8]) {
-        // Similar to struct extraction but for traits
-        // Implementation details...
+    fn extract_rust_trait(&mut self, node: &TSNode, source: &[u8]) {
+        let mut name = String::new();
+        let mut is_public = false;
+        let mut methods = Vec::new();
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "visibility_modifier" => {
+                    is_public = true;
+                }
+                "type_identifier" => {
+                    if name.is_empty() {
+                        name = self.get_node_text(&child, source).unwrap_or_default();
+                    }
+                }
+                "declaration_list" => {
+                    // Extract trait method signatures
+                    let mut method_cursor = child.walk();
+                    for method_child in child.children(&mut method_cursor) {
+                        if method_child.kind() == "function_signature_item" {
+                            if let Some(method_name) = self.find_child_text(&method_child, "identifier", source) {
+                                methods.push(method_name);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !name.is_empty() {
+            let node_id = generate_node_id(&self.current_file, "trait", &name);
+            let location = self.get_location(node);
+
+            let trait_node = Node::new(
+                node_id.clone(),
+                NodeKind::Trait(TraitNode {
+                    name: name.clone(),
+                    is_public,
+                    methods,
+                    implementors: Vec::new(),
+                }),
+                location,
+            );
+
+            self.symbol_to_id.insert(name.clone(), node_id.clone());
+            self.file_symbols
+                .entry(self.current_file.clone())
+                .or_insert_with(Vec::new)
+                .push(node_id.clone());
+            self.graph.add_node(trait_node);
+        }
     }
 
-    fn extract_rust_impl(&mut self, _node: &TSNode, _source: &[u8]) {
+    fn extract_rust_impl(&mut self, node: &TSNode, source: &[u8]) {
         // Extract impl blocks and link methods to types
-        // Implementation details...
+        let mut type_name = None;
+        let mut methods = Vec::new();
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "type_identifier" => {
+                    if type_name.is_none() {
+                        type_name = self.get_node_text(&child, source);
+                    }
+                }
+                "declaration_list" => {
+                    // Extract methods in impl block
+                    let mut method_cursor = child.walk();
+                    for method_child in child.children(&mut method_cursor) {
+                        if method_child.kind() == "function_item" {
+                            if let Some(method_name) = self.find_child_text(&method_child, "identifier", source) {
+                                let method_id = generate_node_id(&self.current_file, "method", &method_name);
+                                methods.push(method_id);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Store methods for this type to link later
+        if let Some(type_str) = type_name {
+            if let Some(type_id) = self.symbol_to_id.get(&type_str) {
+                self.type_methods
+                    .entry(type_id.clone())
+                    .or_insert_with(Vec::new)
+                    .extend(methods);
+            }
+        }
+    }
+
+    fn extract_rust_macro(&mut self, node: &TSNode, source: &[u8]) {
+        let mut name = String::new();
+        let is_public = true; // macro_rules! macros are typically public in their module
+
+        // Get macro name
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                name = self.get_node_text(&child, source).unwrap_or_default();
+                break;
+            }
+        }
+
+        if !name.is_empty() {
+            let node_id = generate_node_id(&self.current_file, "macro", &name);
+            let location = self.get_location(node);
+            let pattern = self.get_node_text(node, source);
+
+            let macro_node = Node::new(
+                node_id.clone(),
+                NodeKind::Macro(MacroNode {
+                    name: name.clone(),
+                    is_public,
+                    macro_type: MacroType::Declarative,
+                    pattern,
+                }),
+                location,
+            );
+
+            self.symbol_to_id.insert(name.clone(), node_id.clone());
+            self.file_symbols
+                .entry(self.current_file.clone())
+                .or_insert_with(Vec::new)
+                .push(node_id.clone());
+            self.graph.add_node(macro_node);
+        }
+    }
+
+    fn find_child_text(&self, node: &TSNode, child_kind: &str, source: &[u8]) -> Option<String> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == child_kind {
+                return self.get_node_text(&child, source);
+            }
+        }
+        None
     }
 
     fn extract_rust_constant(&mut self, node: &TSNode, source: &[u8]) {
