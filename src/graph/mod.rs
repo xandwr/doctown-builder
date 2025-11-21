@@ -14,10 +14,10 @@ pub type NodeId = String;
 pub struct DocpackGraph {
     /// All nodes in the graph
     pub nodes: HashMap<NodeId, Node>,
-    
+
     /// All edges in the graph
     pub edges: Vec<Edge>,
-    
+
     /// Metadata about the graph
     pub metadata: GraphMetadata,
 }
@@ -92,7 +92,7 @@ pub enum TypeKind {
 pub struct TraitNode {
     pub name: String,
     pub is_public: bool,
-    pub methods: Vec<String>, // Method signatures
+    pub methods: Vec<String>,      // Method signatures
     pub implementors: Vec<String>, // NodeIds of implementing types
 }
 
@@ -234,28 +234,28 @@ pub struct Edge {
 pub enum EdgeKind {
     /// Function A calls function B
     Calls,
-    
+
     /// Module A imports module B
     Imports,
-    
+
     /// Type A references type B
     TypeReference,
-    
+
     /// Data flows from A to B
     DataFlow,
-    
+
     /// Module A owns symbol B
     ModuleOwnership,
-    
+
     /// Type A implements trait B
     TraitImplementation,
-    
+
     /// Type A extends/inherits type B
     Inheritance,
-    
+
     /// Function A is a method of type B
     MethodOf,
-    
+
     /// Symbol A is defined in file B
     DefinedIn,
 }
@@ -332,7 +332,7 @@ impl DocpackGraph {
             .values()
             .filter(|n| matches!(n.kind, NodeKind::File(_)))
             .count();
-        
+
         self.metadata.languages = self
             .nodes
             .values()
@@ -435,10 +435,18 @@ impl DocpackGraph {
 
     /// Get statistics about the graph
     pub fn stats(&self) -> GraphStats {
-        let functions = self.get_nodes_by_kind(|k| matches!(k, NodeKind::Function(_))).len();
-        let types = self.get_nodes_by_kind(|k| matches!(k, NodeKind::Type(_))).len();
-        let modules = self.get_nodes_by_kind(|k| matches!(k, NodeKind::Module(_))).len();
-        let files = self.get_nodes_by_kind(|k| matches!(k, NodeKind::File(_))).len();
+        let functions = self
+            .get_nodes_by_kind(|k| matches!(k, NodeKind::Function(_)))
+            .len();
+        let types = self
+            .get_nodes_by_kind(|k| matches!(k, NodeKind::Type(_)))
+            .len();
+        let modules = self
+            .get_nodes_by_kind(|k| matches!(k, NodeKind::Module(_)))
+            .len();
+        let files = self
+            .get_nodes_by_kind(|k| matches!(k, NodeKind::File(_)))
+            .len();
 
         GraphStats {
             total_nodes: self.nodes.len(),

@@ -34,10 +34,7 @@ pub fn parse_all_files(
         }
     }
 
-    println!(
-        "Parsed {} files ({} skipped)",
-        success_count, skip_count
-    );
+    println!("Parsed {} files ({} skipped)", success_count, skip_count);
     Ok(parsed_files)
 }
 

@@ -1,12 +1,14 @@
 // Pipeline Phase 5: LLM Documentation Generation
 // Uses OpenAI to generate human-readable documentation from graph facts
 
-use crate::graph::{DocpackGraph, Node, NodeKind, EdgeKind};
+use crate::graph::{DocpackGraph, EdgeKind, Node, NodeKind};
+use futures::future::join_all;
+use openai::Credentials;
+use openai::chat::{
+    ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionResponseFormat,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use openai::chat::{ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionResponseFormat};
-use openai::Credentials;
-use futures::future::join_all;
 
 /// Configuration for LLM generation
 #[derive(Debug, Clone)]
@@ -24,11 +26,11 @@ impl Default for GenerationConfig {
             .or_else(|_| std::env::var("OPENAI_KEY"))
             .unwrap_or_default();
         let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
-        
+
         Self {
             credentials: Credentials::new(api_key, base_url),
             model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string()),
-            max_completion_tokens: 8000,  // 8k token limit per batch
+            max_completion_tokens: 8000, // 8k token limit per batch
             temperature: 1.0,
         }
     }
@@ -76,28 +78,42 @@ pub async fn generate_documentation(
     graph: &DocpackGraph,
     config: &GenerationConfig,
 ) -> Result<GenerationResult, Box<dyn std::error::Error>> {
-    println!("   🤖 Generating documentation with OpenAI {}...", config.model);
-    
+    println!(
+        "   🤖 Generating documentation with OpenAI {}...",
+        config.model
+    );
+
     let mut total_tokens = 0;
-    
+
     // Step 1: Generate symbol summaries
     println!("   📝 Generating symbol summaries...");
     let (symbol_summaries, tokens) = generate_symbol_summaries(graph, config).await?;
     total_tokens += tokens;
-    println!("      ✓ Generated {} symbol summaries ({} tokens)", symbol_summaries.len(), tokens);
-    
+    println!(
+        "      ✓ Generated {} symbol summaries ({} tokens)",
+        symbol_summaries.len(),
+        tokens
+    );
+
     // Step 2: Generate module overviews
     println!("   📦 Generating module overviews...");
     let (module_overviews, tokens) = generate_module_overviews(graph, config).await?;
     total_tokens += tokens;
-    println!("      ✓ Generated {} module overviews ({} tokens)", module_overviews.len(), tokens);
-    
+    println!(
+        "      ✓ Generated {} module overviews ({} tokens)",
+        module_overviews.len(),
+        tokens
+    );
+
     // Step 3: Generate architecture overview
     println!("   🏗️  Generating architecture overview...");
     let (architecture_overview, tokens) = generate_architecture_overview(graph, config).await?;
     total_tokens += tokens;
-    println!("      ✓ Generated architecture overview ({} tokens)", tokens);
-    
+    println!(
+        "      ✓ Generated architecture overview ({} tokens)",
+        tokens
+    );
+
     Ok(GenerationResult {
         symbol_summaries,
         module_overviews,
@@ -113,45 +129,52 @@ async fn generate_symbol_summaries(
 ) -> Result<(HashMap<String, SymbolDoc>, usize), Box<dyn std::error::Error>> {
     let mut summaries = HashMap::new();
     let mut total_tokens = 0;
-    
+
     // Get functions and types, prioritizing public API
-    let mut important_nodes: Vec<&Node> = graph.nodes.values()
-        .filter(|n| {
-            matches!(n.kind, NodeKind::Function(_)) || matches!(n.kind, NodeKind::Type(_))
-        })
+    let mut important_nodes: Vec<&Node> = graph
+        .nodes
+        .values()
+        .filter(|n| matches!(n.kind, NodeKind::Function(_)) || matches!(n.kind, NodeKind::Type(_)))
         .collect();
-    
+
     // Sort by public API first, then by complexity
-    important_nodes.sort_by(|a, b| {
-        match (a.metadata.is_public_api, b.metadata.is_public_api) {
+    important_nodes.sort_by(
+        |a, b| match (a.metadata.is_public_api, b.metadata.is_public_api) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => b.metadata.complexity.unwrap_or(0).cmp(&a.metadata.complexity.unwrap_or(0))
-        }
-    });
-    
+            _ => b
+                .metadata
+                .complexity
+                .unwrap_or(0)
+                .cmp(&a.metadata.complexity.unwrap_or(0)),
+        },
+    );
+
     // Limit to top 50 symbols to control costs
     important_nodes.truncate(50);
-    
+
     // Create dynamic batches based on token estimates (target ~6k tokens per batch)
     let batches = create_dynamic_batches(graph, &important_nodes, 6000);
-    println!("      Created {} batches for parallel processing", batches.len());
-    
+    println!(
+        "      Created {} batches for parallel processing",
+        batches.len()
+    );
+
     // Process batches in parallel
     let batch_futures: Vec<_> = batches
         .iter()
         .map(|batch| generate_symbol_batch(graph, batch.as_slice(), config))
         .collect();
-    
+
     let results = join_all(batch_futures).await;
-    
+
     // Collect results
     for result in results {
         let (batch_summaries, tokens) = result?;
         total_tokens += tokens;
         summaries.extend(batch_summaries);
     }
-    
+
     Ok((summaries, total_tokens))
 }
 
@@ -168,7 +191,9 @@ async fn generate_symbol_batch(
     let mut summaries = HashMap::new();
 
     // Build prompt with facts about each symbol
-    let mut prompt = String::from("You are a technical documentation writer. For each symbol below, provide a concise, accurate description based ONLY on the facts provided. Do not infer or assume anything.\n\n");
+    let mut prompt = String::from(
+        "You are a technical documentation writer. For each symbol below, provide a concise, accurate description based ONLY on the facts provided. Do not infer or assume anything.\n\n",
+    );
 
     for (idx, node) in nodes.iter().enumerate() {
         prompt.push_str(&format!("\n=== SYMBOL {} ===\n", idx + 1));
@@ -198,12 +223,15 @@ async fn generate_symbol_batch(
 /// Format facts about a symbol for the LLM
 fn format_symbol_facts(graph: &DocpackGraph, node: &Node) -> String {
     let mut facts = String::new();
-    
+
     facts.push_str(&format!("ID: {}\n", node.id));
     facts.push_str(&format!("Name: {}\n", node.name()));
-    facts.push_str(&format!("Location: {}:{}\n", node.location.file, node.location.start_line));
+    facts.push_str(&format!(
+        "Location: {}:{}\n",
+        node.location.file, node.location.start_line
+    ));
     facts.push_str(&format!("Public API: {}\n", node.metadata.is_public_api));
-    
+
     match &node.kind {
         NodeKind::Function(f) => {
             facts.push_str(&format!("Type: Function\n"));
@@ -221,44 +249,66 @@ fn format_symbol_facts(graph: &DocpackGraph, node: &Node) -> String {
         }
         _ => {}
     }
-    
+
     // Add complexity
     if let Some(complexity) = node.metadata.complexity {
         facts.push_str(&format!("Complexity: {}\n", complexity));
     }
-    
+
     // Add fan-in/fan-out
-    facts.push_str(&format!("Fan-in: {} (things that call/use this)\n", node.metadata.fan_in));
-    facts.push_str(&format!("Fan-out: {} (things this calls/uses)\n", node.metadata.fan_out));
-    
+    facts.push_str(&format!(
+        "Fan-in: {} (things that call/use this)\n",
+        node.metadata.fan_in
+    ));
+    facts.push_str(&format!(
+        "Fan-out: {} (things this calls/uses)\n",
+        node.metadata.fan_out
+    ));
+
     // Add docstring if available
     if let Some(doc) = &node.metadata.docstring {
         facts.push_str(&format!("Existing Doc: {}\n", doc));
     }
-    
+
     // Add call relationships
-    let callers: Vec<_> = graph.get_incoming_edges(&node.id)
+    let callers: Vec<_> = graph
+        .get_incoming_edges(&node.id)
         .iter()
         .filter(|e| matches!(e.kind, EdgeKind::Calls))
         .map(|e| &e.source)
         .take(3)
         .collect();
-    
+
     if !callers.is_empty() {
-        facts.push_str(&format!("Called by: {}\n", callers.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+        facts.push_str(&format!(
+            "Called by: {}\n",
+            callers
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
-    
-    let callees: Vec<_> = graph.get_outgoing_edges(&node.id)
+
+    let callees: Vec<_> = graph
+        .get_outgoing_edges(&node.id)
         .iter()
         .filter(|e| matches!(e.kind, EdgeKind::Calls))
         .map(|e| &e.target)
         .take(3)
         .collect();
-    
+
     if !callees.is_empty() {
-        facts.push_str(&format!("Calls: {}\n", callees.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+        facts.push_str(&format!(
+            "Calls: {}\n",
+            callees
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
-    
+
     facts
 }
 
@@ -284,12 +334,14 @@ fn parse_symbol_json_response(
 ) -> Result<HashMap<String, SymbolDoc>, Box<dyn std::error::Error>> {
     let mut summaries = HashMap::new();
 
-    let batch: SymbolBatchResponse = serde_json::from_str(response)
-        .map_err(|e| {
-            eprintln!("Failed to parse JSON response. Error: {}", e);
-            eprintln!("Response (first 500 chars): {}", &response.chars().take(500).collect::<String>());
-            format!("JSON parsing error: {}", e)
-        })?;
+    let batch: SymbolBatchResponse = serde_json::from_str(response).map_err(|e| {
+        eprintln!("Failed to parse JSON response. Error: {}", e);
+        eprintln!(
+            "Response (first 500 chars): {}",
+            &response.chars().take(500).collect::<String>()
+        );
+        format!("JSON parsing error: {}", e)
+    })?;
 
     for item in batch.symbols {
         let idx = item.symbol_index;
@@ -318,28 +370,30 @@ async fn generate_module_overviews(
 ) -> Result<(HashMap<String, ModuleDoc>, usize), Box<dyn std::error::Error>> {
     let mut overviews = HashMap::new();
     let mut total_tokens = 0;
-    
+
     // Get all modules
-    let modules: Vec<&Node> = graph.nodes.values()
+    let modules: Vec<&Node> = graph
+        .nodes
+        .values()
         .filter(|n| matches!(n.kind, NodeKind::Module(_)))
         .take(20) // Limit modules
         .collect();
-    
+
     // Process modules in parallel
     let module_futures: Vec<_> = modules
         .iter()
         .map(|module| generate_module_doc(graph, module, config))
         .collect();
-    
+
     let results = join_all(module_futures).await;
-    
+
     // Collect results
     for (module, result) in modules.iter().zip(results) {
         let (doc, tokens) = result?;
         total_tokens += tokens;
         overviews.insert(module.id.clone(), doc);
     }
-    
+
     Ok((overviews, total_tokens))
 }
 
@@ -354,72 +408,94 @@ async fn generate_module_doc(
     } else {
         return Err("Not a module node".into());
     };
-    
+
     // Find symbols that belong to this module by examining the module's file location
     // Since module.children is not populated, we need to find symbols in the same file
     let module_file = &module.location.file;
-    let module_symbols: Vec<&Node> = graph.nodes.values()
+    let module_symbols: Vec<&Node> = graph
+        .nodes
+        .values()
         .filter(|n| {
             // Include symbols from the same file that aren't modules themselves
             n.location.file == *module_file && !matches!(n.kind, NodeKind::Module(_))
         })
         .collect();
-    
+
     // Build facts about the module
-    let mut prompt = format!("You are a technical documentation writer. Describe this module based ONLY on the provided facts.\n\n");
+    let mut prompt = format!(
+        "You are a technical documentation writer. Describe this module based ONLY on the provided facts.\n\n"
+    );
     prompt.push_str(&format!("MODULE: {}\n", module_data.name));
     prompt.push_str(&format!("Path: {}\n", module_data.path));
     prompt.push_str(&format!("Public: {}\n", module_data.is_public));
     prompt.push_str(&format!("Child symbols: {}\n", module_symbols.len()));
-    
+
     // List key symbols
-    let key_symbols: Vec<String> = module_symbols.iter()
+    let key_symbols: Vec<String> = module_symbols
+        .iter()
         .filter(|n| n.metadata.is_public_api || n.is_public())
         .take(10)
-        .map(|n| format!("{} ({})", n.name(), match n.kind {
-            NodeKind::Function(_) => "fn",
-            NodeKind::Type(_) => "type",
-            _ => "other"
-        }))
+        .map(|n| {
+            format!(
+                "{} ({})",
+                n.name(),
+                match n.kind {
+                    NodeKind::Function(_) => "fn",
+                    NodeKind::Type(_) => "type",
+                    _ => "other",
+                }
+            )
+        })
         .collect();
-    
+
     if !key_symbols.is_empty() {
         prompt.push_str(&format!("\nKey public symbols:\n"));
         for sym in &key_symbols {
             prompt.push_str(&format!("  - {}\n", sym));
         }
     }
-    
+
     // Module dependencies
-    let imports: Vec<_> = graph.get_outgoing_edges(&module.id)
+    let imports: Vec<_> = graph
+        .get_outgoing_edges(&module.id)
         .iter()
         .filter(|e| matches!(e.kind, EdgeKind::Imports))
         .map(|e| &e.target)
         .take(5)
         .collect();
-    
+
     if !imports.is_empty() {
-        prompt.push_str(&format!("\nImports: {}\n", imports.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+        prompt.push_str(&format!(
+            "\nImports: {}\n",
+            imports
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
-    
+
     prompt.push_str("\n\nProvide:\n");
     prompt.push_str("1. Module responsibilities (1-2 sentences)\n");
     prompt.push_str("2. How it interacts with other modules\n");
     prompt.push_str("\nFormat:\nResponsibilities: ...\nInteractions: ...\n");
-    
+
     let response = call_openai(config, &prompt).await?;
     let tokens = estimate_tokens(&prompt) + estimate_tokens(&response);
-    
+
     // Parse response
     let responsibilities = extract_field(&response, "Responsibilities:");
     let interactions = extract_field(&response, "Interactions:");
-    
-    Ok((ModuleDoc {
-        module_name: module_data.name.clone(),
-        responsibilities,
-        key_symbols: key_symbols.iter().take(5).cloned().collect(),
-        interactions,
-    }, tokens))
+
+    Ok((
+        ModuleDoc {
+            module_name: module_data.name.clone(),
+            responsibilities,
+            key_symbols: key_symbols.iter().take(5).cloned().collect(),
+            interactions,
+        },
+        tokens,
+    ))
 }
 
 /// Generate architecture overview
@@ -428,9 +504,11 @@ async fn generate_architecture_overview(
     config: &GenerationConfig,
 ) -> Result<(ArchitectureDoc, usize), Box<dyn std::error::Error>> {
     let stats = graph.stats();
-    
-    let mut prompt = String::from("You are a senior software architect. Provide a high-level architecture overview based ONLY on these facts:\n\n");
-    
+
+    let mut prompt = String::from(
+        "You are a senior software architect. Provide a high-level architecture overview based ONLY on these facts:\n\n",
+    );
+
     prompt.push_str(&format!("REPOSITORY STATISTICS:\n"));
     prompt.push_str(&format!("- Total symbols: {}\n", stats.total_nodes));
     prompt.push_str(&format!("- Functions: {}\n", stats.functions));
@@ -439,61 +517,73 @@ async fn generate_architecture_overview(
     prompt.push_str(&format!("- Files: {}\n", stats.files));
     prompt.push_str(&format!("- Languages: {}\n", stats.languages));
     prompt.push_str(&format!("- Relationships: {}\n", stats.total_edges));
-    
+
     // List major modules
-    let modules: Vec<String> = graph.nodes.values()
+    let modules: Vec<String> = graph
+        .nodes
+        .values()
         .filter(|n| matches!(n.kind, NodeKind::Module(_)))
         .take(10)
         .map(|n| n.name())
         .collect();
-    
+
     if !modules.is_empty() {
         prompt.push_str(&format!("\nMAJOR MODULES:\n"));
         for module in modules {
             prompt.push_str(&format!("  - {}\n", module));
         }
     }
-    
+
     // List clusters if available
-    let clusters: Vec<String> = graph.nodes.values()
+    let clusters: Vec<String> = graph
+        .nodes
+        .values()
         .filter(|n| matches!(n.kind, NodeKind::Cluster(_)))
         .take(10)
         .map(|n| n.name())
         .collect();
-    
+
     if !clusters.is_empty() {
         prompt.push_str(&format!("\nSEMANTIC CLUSTERS:\n"));
         for cluster in clusters {
             prompt.push_str(&format!("  - {}\n", cluster));
         }
     }
-    
+
     prompt.push_str("\n\nProvide:\n");
     prompt.push_str("1. High-level architectural overview (2-3 sentences)\n");
     prompt.push_str("2. System behavior and purpose (2-3 sentences)\n");
     prompt.push_str("3. Data flow patterns (1-2 sentences)\n");
     prompt.push_str("4. Key components (list 3-5)\n");
-    prompt.push_str("\nFormat:\nOverview: ...\nBehavior: ...\nData Flow: ...\nKey Components:\n- ...\n- ...\n");
-    
+    prompt.push_str(
+        "\nFormat:\nOverview: ...\nBehavior: ...\nData Flow: ...\nKey Components:\n- ...\n- ...\n",
+    );
+
     let response = call_openai(config, &prompt).await?;
     let tokens = estimate_tokens(&prompt) + estimate_tokens(&response);
-    
+
     // Parse response
     let overview = extract_field(&response, "Overview:");
     let behavior = extract_field(&response, "Behavior:");
     let data_flow = extract_field(&response, "Data Flow:");
     let key_components = extract_list(&response, "Key Components:");
-    
-    Ok((ArchitectureDoc {
-        overview,
-        system_behavior: behavior,
-        data_flow,
-        key_components,
-    }, tokens))
+
+    Ok((
+        ArchitectureDoc {
+            overview,
+            system_behavior: behavior,
+            data_flow,
+            key_components,
+        },
+        tokens,
+    ))
 }
 
 /// Call OpenAI API
-async fn call_openai(config: &GenerationConfig, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+async fn call_openai(
+    config: &GenerationConfig,
+    prompt: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     let messages = vec![
         ChatCompletionMessage {
             role: ChatCompletionMessageRole::System,
@@ -520,7 +610,8 @@ async fn call_openai(config: &GenerationConfig, prompt: &str) -> Result<String, 
         .create()
         .await?;
 
-    let content = response.choices
+    let content = response
+        .choices
         .get(0)
         .and_then(|choice| choice.message.content.as_ref())
         .ok_or("No response content")?;
@@ -529,7 +620,10 @@ async fn call_openai(config: &GenerationConfig, prompt: &str) -> Result<String, 
 }
 
 /// Call OpenAI API with JSON mode
-async fn call_openai_json(config: &GenerationConfig, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+async fn call_openai_json(
+    config: &GenerationConfig,
+    prompt: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     let messages = vec![
         ChatCompletionMessage {
             role: ChatCompletionMessageRole::System,
@@ -558,7 +652,8 @@ async fn call_openai_json(config: &GenerationConfig, prompt: &str) -> Result<Str
         .await
         .map_err(|e| format!("OpenAI API error: {}", e))?;
 
-    let content = response.choices
+    let content = response
+        .choices
         .get(0)
         .and_then(|choice| choice.message.content.as_ref())
         .ok_or("No response content from OpenAI")?;
@@ -581,27 +676,27 @@ fn create_dynamic_batches<'a>(
     let mut batches = Vec::new();
     let mut current_batch = Vec::new();
     let mut current_tokens = 0;
-    
+
     for node in nodes {
         let node_facts = format_symbol_facts(graph, node);
         let node_tokens = estimate_tokens(&node_facts);
-        
+
         // If adding this node would exceed limit and batch isn't empty, start new batch
         if current_tokens + node_tokens > target_tokens && !current_batch.is_empty() {
             batches.push(current_batch);
             current_batch = Vec::new();
             current_tokens = 0;
         }
-        
+
         current_batch.push(*node);
         current_tokens += node_tokens;
     }
-    
+
     // Add final batch
     if !current_batch.is_empty() {
         batches.push(current_batch);
     }
-    
+
     batches
 }
 
@@ -619,17 +714,23 @@ fn extract_field(text: &str, field_name: &str) -> String {
 fn extract_list(text: &str, field_name: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut in_list = false;
-    
+
     for line in text.lines() {
         if line.starts_with(field_name) {
             in_list = true;
             continue;
         }
-        
+
         if in_list {
             let trimmed = line.trim();
             if trimmed.starts_with('-') || trimmed.starts_with('•') {
-                items.push(trimmed.trim_start_matches('-').trim_start_matches('•').trim().to_string());
+                items.push(
+                    trimmed
+                        .trim_start_matches('-')
+                        .trim_start_matches('•')
+                        .trim()
+                        .to_string(),
+                );
             } else if !trimmed.is_empty() && !trimmed.contains(':') {
                 items.push(trimmed.to_string());
             } else if trimmed.contains(':') && items.len() > 0 {
@@ -638,7 +739,7 @@ fn extract_list(text: &str, field_name: &str) -> Vec<String> {
             }
         }
     }
-    
+
     items
 }
 

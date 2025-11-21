@@ -47,7 +47,7 @@ impl Default for ClusterConfig {
             use_mock_embeddings: false, // Use real embeddings by default
             model_path: "models/minilm-l6/model.onnx".to_string(),
             tokenizer_path: "models/minilm-l6/tokenizer.json".to_string(),
-            batch_size: 8,
+            batch_size: 20,
         }
     }
 }

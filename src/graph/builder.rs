@@ -2,13 +2,12 @@
 // Graph builder - constructs the Docpack Graph from parsed AST data
 
 use super::{
-    DocpackGraph, Node, NodeKind, Edge, EdgeKind, NodeId, Location,
-    FunctionNode, TypeNode, TypeKind, ModuleNode, FileNode, ConstantNode,
-    Parameter, Field, generate_node_id,
+    ConstantNode, DocpackGraph, Edge, EdgeKind, Field, FileNode, FunctionNode, Location,
+    ModuleNode, Node, NodeId, NodeKind, Parameter, TypeKind, TypeNode, generate_node_id,
 };
 use crate::pipeline::parse::ParsedFile;
-use tree_sitter::{Node as TSNode};
 use std::collections::HashMap;
+use tree_sitter::Node as TSNode;
 
 pub struct GraphBuilder {
     graph: DocpackGraph,
@@ -206,7 +205,8 @@ impl GraphBuilder {
             func_node.metadata.source_snippet = source_snippet;
 
             self.symbol_to_id.insert(name.clone(), node_id.clone());
-            self.file_symbols.entry(self.current_file.clone())
+            self.file_symbols
+                .entry(self.current_file.clone())
                 .or_insert_with(Vec::new)
                 .push(node_id.clone());
             self.graph.add_node(func_node);
@@ -255,7 +255,8 @@ impl GraphBuilder {
             type_node.metadata.source_snippet = source_snippet;
 
             self.symbol_to_id.insert(name.clone(), node_id.clone());
-            self.file_symbols.entry(self.current_file.clone())
+            self.file_symbols
+                .entry(self.current_file.clone())
                 .or_insert_with(Vec::new)
                 .push(node_id.clone());
             self.graph.add_node(type_node);
@@ -300,7 +301,8 @@ impl GraphBuilder {
             type_node.metadata.source_snippet = source_snippet;
 
             self.symbol_to_id.insert(name.clone(), node_id.clone());
-            self.file_symbols.entry(self.current_file.clone())
+            self.file_symbols
+                .entry(self.current_file.clone())
                 .or_insert_with(Vec::new)
                 .push(node_id.clone());
             self.graph.add_node(type_node);
@@ -355,7 +357,8 @@ impl GraphBuilder {
             );
 
             self.symbol_to_id.insert(name.clone(), node_id.clone());
-            self.file_symbols.entry(self.current_file.clone())
+            self.file_symbols
+                .entry(self.current_file.clone())
                 .or_insert_with(Vec::new)
                 .push(node_id.clone());
             self.graph.add_node(const_node);
@@ -397,7 +400,8 @@ impl GraphBuilder {
             );
 
             self.symbol_to_id.insert(name.clone(), node_id.clone());
-            self.file_symbols.entry(self.current_file.clone())
+            self.file_symbols
+                .entry(self.current_file.clone())
                 .or_insert_with(Vec::new)
                 .push(node_id.clone());
             self.graph.add_node(module_node);
@@ -418,7 +422,8 @@ impl GraphBuilder {
                 for param_child in child.children(&mut param_cursor) {
                     match param_child.kind() {
                         "identifier" | "self" => {
-                            param_name = self.get_node_text(&param_child, source).unwrap_or_default();
+                            param_name =
+                                self.get_node_text(&param_child, source).unwrap_or_default();
                         }
                         "type" => {
                             param_type = self.get_node_text(&param_child, source);
@@ -460,7 +465,8 @@ impl GraphBuilder {
                             is_public = true;
                         }
                         "field_identifier" => {
-                            field_name = self.get_node_text(&field_child, source).unwrap_or_default();
+                            field_name =
+                                self.get_node_text(&field_child, source).unwrap_or_default();
                         }
                         "type" => {
                             field_type = self.get_node_text(&field_child, source);
