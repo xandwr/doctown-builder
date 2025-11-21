@@ -83,6 +83,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🟫 Phase 3: Building Docpack Graph...");
     let mut graph = build_graph(&parsed);
 
+    println!("\n🟧 Phase 4: Analyzing metrics (complexity, public API)...");
+    let analysis_config = pipeline::analyze::AnalysisConfig::default();
+    let analysis_result = pipeline::analyze::analyze_graph(&mut graph, &analysis_config)?;
+
+    println!("   • Nodes analyzed: {}", analysis_result.nodes_analyzed);
+    println!("   • Complexity calculated: {}", analysis_result.complexity_calculated);
+    println!("   • Public API detected: {}", analysis_result.public_api_detected);
+
     let stats = graph.stats();
     println!("\n📊 Graph Statistics:");
     println!("   • Total nodes: {}", stats.total_nodes);
@@ -127,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   ... and {} more edges", graph.edges.len() - 10);
     }
 
-    println!("\n🟨 Phase 4: Semantic Clustering...");
+    println!("\n🟨 Phase 5: Semantic Clustering...");
     let cluster_config = pipeline::cluster::ClusterConfig::default();
     let cluster_result = pipeline::cluster::cluster_graph(&mut graph, &cluster_config)?;
 
@@ -172,7 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     graph.save_to_file(output_path)?;
     println!("   ✓ Graph saved successfully!");
 
-    println!("\n🟥 Phase 5: Generating documentation with LLM...");
+    println!("\n🟥 Phase 6: Generating documentation with LLM...");
     let gen_config = pipeline::generate::GenerationConfig::default();
 
     match pipeline::generate::generate_documentation(&graph, &gen_config).await {
