@@ -4,8 +4,8 @@
 //! accepting job configuration via stdin JSON and uploading results to R2.
 
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client as S3Client;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;

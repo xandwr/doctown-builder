@@ -3,10 +3,10 @@
 
 use crate::graph::{DocpackGraph, EdgeKind, Node, NodeId, NodeKind};
 use futures::future::join_all;
-use openai::Credentials;
 use openai::chat::{
     ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionResponseFormat,
 };
+use openai::Credentials;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

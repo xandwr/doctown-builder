@@ -12,9 +12,9 @@ use ndarray::Array2;
 use ort::value::Value;
 #[allow(unused)]
 use ort::{
-    Error,
-    session::{Session, builder::GraphOptimizationLevel},
+    session::{builder::GraphOptimizationLevel, Session},
     value::TensorRef,
+    Error,
 };
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -197,7 +197,7 @@ fn generate_jina_embeddings(
     contents: &[EmbeddableContent],
     config: &ClusterConfig,
 ) -> Result<Vec<Embedding>, Box<dyn std::error::Error>> {
-    use std::sync::{Arc, mpsc};
+    use std::sync::{mpsc, Arc};
     use std::thread;
     use std::time::Instant;
 

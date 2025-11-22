@@ -4,8 +4,8 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use zip::CompressionMethod;
 use zip::write::{SimpleFileOptions, ZipWriter};
+use zip::CompressionMethod;
 
 /// Configuration for packaging
 #[derive(Debug, Clone)]

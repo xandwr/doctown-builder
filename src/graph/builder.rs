@@ -3,9 +3,9 @@
 
 use super::resolver::ReferenceResolver;
 use super::{
-    ConstantNode, DocpackGraph, Edge, EdgeKind, Field, FileNode, FunctionNode, Location, MacroNode,
-    MacroType, ModuleNode, Node, NodeId, NodeKind, Parameter, TraitNode, TypeKind, TypeNode,
-    generate_node_id,
+    generate_node_id, ConstantNode, DocpackGraph, Edge, EdgeKind, Field, FileNode, FunctionNode,
+    Location, MacroNode, MacroType, ModuleNode, Node, NodeId, NodeKind, Parameter, TraitNode,
+    TypeKind, TypeNode,
 };
 use crate::pipeline::parse::ParsedFile;
 use std::collections::HashMap;

@@ -4,7 +4,7 @@ mod serverless;
 
 use clap::Parser;
 use graph::builder::build_graph;
-use pipeline::ingest::{InputSource, ingest};
+use pipeline::ingest::{ingest, InputSource};
 use std::path::Path;
 
 #[derive(Parser, Debug)]
