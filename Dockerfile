@@ -1,8 +1,8 @@
 # RunPod Dockerfile for doctown-builder
-# Uses Rust nightly 2024 edition with all dependencies
+# Uses Rust stable with all dependencies
 
 # Stage 1: Build the binary
-FROM rust:nightly AS builder
+FROM rust:1.83 AS builder
 
 WORKDIR /app
 
