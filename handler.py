@@ -31,7 +31,7 @@ def handler(job):
     try:
         # Run the builder binary
         result = subprocess.run(
-            ["doctown-builder", "--serverless"],
+            ["/usr/local/bin/doctown-builder", "--serverless"],
             env=env,
             capture_output=True,
             text=True,
@@ -39,6 +39,9 @@ def handler(job):
         )
 
         # Log stdout/stderr for debugging
+        print(f"[handler] Exit code: {result.returncode}", flush=True)
+        print(f"[handler] Stdout length: {len(result.stdout) if result.stdout else 0}", flush=True)
+        print(f"[handler] Stderr length: {len(result.stderr) if result.stderr else 0}", flush=True)
         if result.stdout:
             print(result.stdout)
         if result.stderr:
