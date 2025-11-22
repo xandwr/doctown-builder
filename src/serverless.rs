@@ -64,7 +64,7 @@ impl ServerlessConfig {
             r2_secret_key: env::var("BUCKET_SECRET_ACCESS_KEY")
                 .map_err(|_| "Missing BUCKET_SECRET_ACCESS_KEY")?,
             webhook_url: env::var("WEBHOOK_URL")
-                .unwrap_or_else(|_| "https://doctown.dev/api/jobs/complete".to_string()),
+                .unwrap_or_else(|_| "https://www.doctown.dev/api/jobs/complete".to_string()),
             webhook_secret: env::var("DOCTOWN_BUILDER_SHARED_SECRET")
                 .map_err(|_| "Missing DOCTOWN_BUILDER_SHARED_SECRET")?,
         })
@@ -127,7 +127,7 @@ pub async fn upload_to_r2(
     // Return the public URL
     Ok(format!(
         "{}/{}/{}",
-        "https://storage.doctown.dev", bucket, key
+        "https://commons.doctown.dev", bucket, key
     ))
 }
 
