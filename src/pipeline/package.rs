@@ -22,6 +22,7 @@ impl Default for PackageConfig {
 
 /// Result of packaging
 #[derive(Debug, Clone)]
+#[allow(unused)]
 pub struct PackageResult {
     pub output_path: String,
     pub files_included: usize,

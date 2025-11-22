@@ -13,6 +13,7 @@ use std::path::Path;
 
 /// Job input from RunPod
 #[derive(Debug, Deserialize)]
+#[allow(unused)]
 pub struct JobInput {
     pub job_id: String,
     pub user_id: String,

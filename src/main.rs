@@ -5,7 +5,6 @@ mod serverless;
 use clap::Parser;
 use graph::builder::build_graph;
 use pipeline::ingest::{InputSource, ingest};
-use std::env;
 use std::path::Path;
 
 #[derive(Parser, Debug)]
@@ -67,6 +66,7 @@ async fn run_serverless() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Load serverless configuration
+    #[allow(unused)]
     let config = match ServerlessConfig::from_env() {
         Ok(c) => c,
         Err(e) => {

@@ -96,6 +96,7 @@ pub fn cluster_graph(
 
 /// Result of clustering operation
 #[derive(Debug, Clone)]
+#[allow(unused)]
 pub struct ClusteringResult {
     pub clusters_created: usize,
     pub embeddings_generated: usize,

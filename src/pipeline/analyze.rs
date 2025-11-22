@@ -21,6 +21,7 @@ impl Default for AnalysisConfig {
 
 /// Result of analysis
 #[derive(Debug, Clone)]
+#[allow(unused)]
 pub struct AnalysisResult {
     pub nodes_analyzed: usize,
     pub complexity_calculated: usize,
