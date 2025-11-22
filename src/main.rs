@@ -34,8 +34,23 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load environment variables from .env file
-    dotenv::dotenv().ok();
+    // Load environment variables: prefer `~/.localdoc` for local dev, then fall
+    // back to a project `.env` if present. In production (RunPod) env vars are
+    // already supplied by the environment.
+    if let Ok(home) = std::env::var("HOME") {
+        let local_env = std::path::Path::new(&home).join(".localdoc");
+        if local_env.exists() {
+            match dotenv::from_path(local_env.as_path()) {
+                Ok(_) => println!("Loaded environment from {}", local_env.display()),
+                Err(e) => eprintln!("Warning: failed to load {}: {}", local_env.display(), e),
+            }
+        } else {
+            // Fallback to default .env in current directory if present
+            dotenv::dotenv().ok();
+        }
+    } else {
+        dotenv::dotenv().ok();
+    }
 
     let args = Args::parse();
 

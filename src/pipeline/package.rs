@@ -35,12 +35,34 @@ pub fn package_outputs(
     output_dir: &str,
     _config: &PackageConfig,
 ) -> Result<PackageResult, Box<dyn std::error::Error>> {
-    // Determine output filename
-    let docpack_name = generate_docpack_name(input_name);
-    let docpack_path = Path::new(&docpack_name);
+    // Determine output filename inside the provided output directory
+    let input_path = Path::new(input_name);
+    let base_name = input_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+
+    let final_name = if input_name.starts_with("http") {
+        input_name
+            .split('/')
+            .last()
+            .unwrap_or(base_name)
+            .trim_end_matches(".git")
+            .to_string()
+    } else {
+        base_name.to_string()
+    };
+
+    // Ensure the output directory exists
+    let output_path = Path::new(output_dir);
+    if !output_path.exists() {
+        std::fs::create_dir_all(output_path)?;
+    }
+
+    let docpack_path = output_path.join(format!("{}.docpack", final_name));
 
     // Create the zip file
-    let file = File::create(docpack_path)?;
+    let file = File::create(&docpack_path)?;
     let mut zip = ZipWriter::new(file);
 
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -94,36 +116,15 @@ pub fn package_outputs(
     }
 
     Ok(PackageResult {
-        output_path: docpack_name.clone(),
+        output_path: docpack_path.to_string_lossy().to_string(),
         files_included,
         total_size_bytes: total_size,
     })
 }
 
 /// Generate the .docpack filename from input name
-fn generate_docpack_name(input_name: &str) -> String {
-    let input_path = Path::new(input_name);
-
-    // Get the filename without extension
-    let base_name = input_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-
-    // If input was a URL, extract repo name
-    let final_name = if input_name.starts_with("http") {
-        // Extract repo name from URL (e.g., "user/repo.git" -> "repo")
-        input_name
-            .split('/')
-            .last()
-            .unwrap_or(base_name)
-            .trim_end_matches(".git")
-    } else {
-        base_name
-    };
-
-    format!("output/{}.docpack", final_name)
-}
+// NOTE: docpack path is now constructed inside `package_outputs` using the
+// provided `output_dir`, so the previous helper is no longer needed.
 
 /// Generate metadata JSON
 fn generate_metadata(input_name: &str, files: usize, size: usize) -> String {
