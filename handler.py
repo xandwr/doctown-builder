@@ -28,7 +28,20 @@ def handler(job):
     env = os.environ.copy()
     env["RUNPOD_INPUT"] = json.dumps(job_input)
 
+    print(f"[handler] RUNPOD_INPUT: {env['RUNPOD_INPUT'][:200]}", flush=True)
+
     try:
+        # First, verify the binary exists and get its help output
+        check = subprocess.run(
+            ["/usr/local/bin/doctown-builder", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        print(f"[handler] Binary check - exit: {check.returncode}, stdout: {len(check.stdout)}, stderr: {len(check.stderr)}", flush=True)
+        if check.stdout:
+            print(f"[handler] Help output: {check.stdout[:200]}", flush=True)
+
         # Run the builder binary
         result = subprocess.run(
             ["/usr/local/bin/doctown-builder", "--serverless"],
