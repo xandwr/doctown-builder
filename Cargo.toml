@@ -44,3 +44,6 @@ tokenizers = "0.20"
 ndarray = "0.16"
 futures = "0.3.31"
 num_cpus = "1.16"
+aws-sdk-s3 = "1.65"
+aws-config = { version = "1.6", features = ["behavior-version-latest"] }
+clap = { version = "4.5", features = ["derive"] }
