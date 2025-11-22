@@ -51,7 +51,7 @@ impl Default for ClusterConfig {
             model_path: "models/minilm-l6/model.onnx".to_string(),
             tokenizer_path: "models/minilm-l6/tokenizer.json".to_string(),
             batch_size: 8,
-            num_workers: num_cpus::get().max(4), // Default to CPU count, minimum 4
+            num_workers: num_cpus::get().min(8).max(2), // Cap at 8 workers to avoid ORT issues
         }
     }
 }

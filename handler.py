@@ -64,6 +64,7 @@ def handler(job):
         if result.returncode != 0:
             return {
                 "error": f"Builder exited with code {result.returncode}",
+                "stdout": result.stdout[-2000:] if result.stdout else None,
                 "stderr": result.stderr[-2000:] if result.stderr else None
             }
 

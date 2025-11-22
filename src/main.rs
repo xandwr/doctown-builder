@@ -32,8 +32,16 @@ struct Args {
     output: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    // Immediate flush to confirm binary is running
+    eprintln!("[doctown-builder] Starting (sync main)...");
+    std::io::stderr().flush().ok();
+
+    eprintln!("[doctown-builder] Loading env...");
+    std::io::stderr().flush().ok();
+
     // Load environment variables: prefer `~/.localdoc` for local dev, then fall
     // back to a project `.env` if present. In production (RunPod) env vars are
     // already supplied by the environment.
@@ -52,12 +60,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dotenv::dotenv().ok();
     }
 
+    eprintln!("[doctown-builder] Parsing args...");
+    std::io::stderr().flush().ok();
+
     let args = Args::parse();
 
+    eprintln!("[doctown-builder] Args parsed, serverless={}", args.serverless);
+    std::io::stderr().flush().ok();
+
+    // Build tokio runtime manually with limited threads
+    eprintln!("[doctown-builder] Building tokio runtime...");
+    std::io::stderr().flush().ok();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+
+    eprintln!("[doctown-builder] Runtime built, entering async...");
+    std::io::stderr().flush().ok();
+
     if args.serverless {
-        run_serverless().await
+        runtime.block_on(run_serverless())
     } else {
-        run_cli(args).await
+        runtime.block_on(run_cli(args))
     }
 }
 
